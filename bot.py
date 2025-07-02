@@ -1479,7 +1479,6 @@ async def admin_check_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     await msg.edit_text(text)
 
 async def price_check_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Premium kullanıcılar ve adminler için belirli bir coin paritesinin tüm borsalardaki fiyatını sırala ve güvenlik filtrelerinden geçir."""
     user = update.effective_user
     user_id = user.id
     is_premium = bot.is_premium_user(user_id)
@@ -1505,11 +1504,18 @@ async def price_check_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     msg = await update.message.reply_text(f"🔄 Fetching data and analyzing safety for **{symbol_to_check}**...")
 
     try:
-        # Fetch all exchange data first, as it's needed for both price and safety check
+        # Fetch all exchange data first
         all_exchange_data = await bot.get_all_prices_with_volume()
 
-        # Perform security filter check
-        is_safe, safety_reason = bot.is_symbol_safe(symbol_to_check, all_exchange_data)
+        # Extract data for the specific symbol across all exchanges for safety check
+        symbol_specific_exchange_data = {}
+        for exchange_name, data_for_exchange in all_exchange_data.items():
+            normalized_symbol = bot.normalize_symbol(symbol_to_check, exchange_name)
+            if normalized_symbol in data_for_exchange:
+                symbol_specific_exchange_data[exchange_name] = data_for_exchange[normalized_symbol]
+
+        # Perform security filter check using the extracted symbol-specific data
+        is_safe, safety_reason = bot.is_symbol_safe(symbol_to_check, symbol_specific_exchange_data)
 
         safety_text = f"🛡️ **Security Check for {symbol_to_check}:**\n{safety_reason}\n\n"
 
@@ -1518,13 +1524,11 @@ async def price_check_command(update: Update, context: ContextTypes.DEFAULT_TYPE
             return
 
         # If safe, proceed to fetch and display prices
-        normalized_symbol_to_find = bot.normalize_symbol(symbol_to_check, "general")
         found_prices = []
-        for exchange_name, data_for_exchange in all_exchange_data.items():
-            if normalized_symbol_to_find in data_for_exchange:
-                price = data_for_exchange[normalized_symbol_to_find]['price']
-                if price > 0: # Only include valid prices
-                    found_prices.append((exchange_name, price))
+        for exchange_name, data_for_exchange in symbol_specific_exchange_data.items():
+            price = data_for_exchange['price']
+            if price > 0: # Only include valid prices
+                found_prices.append((exchange_name, price))
         
         if not found_prices:
             await msg.edit_text(f"❌ **{symbol_to_check}** not found on any monitored exchange, or prices are unavailable.\n\n{safety_text}")
