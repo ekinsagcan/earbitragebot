@@ -5,7 +5,8 @@ from datetime import datetime, timedelta
 from typing import Dict, List, Tuple, Set
 import aiohttp
 from aiohttp import TCPConnector
-import sqlite3
+import psycopg2 # PostgreSQL için yeni import
+from urllib.parse import urlparse # DATABASE_URL'yi parse etmek için yeni import
 import time
 from threading import Lock
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -71,7 +72,7 @@ class ArbitrageBot:
         
         # Trusted major cryptocurrencies - these are generally the same across all exchanges
         self.trusted_symbols = {
-            'BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'ADAUSDT', 'XRPUSDT', 
+            'BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'ADAUSDT', 'XRPUSDT',
             'SOLUSDT', 'DOTUSDT', 'DOGEUSDT', 'AVAXUSDT', 'MATICUSDT',
             'LINKUSDT', 'LTCUSDT', 'BCHUSDT', 'UNIUSDT', 'ATOMUSDT',
             'VETUSDT', 'FILUSDT', 'TRXUSDT', 'ETCUSDT', 'XLMUSDT',
@@ -115,16 +116,23 @@ class ArbitrageBot:
         # Premium users cache
         self.premium_users = set()
         
+        # Database connection details from environment variable
+        self.DATABASE_URL = os.getenv("DATABASE_URL")
+        if not self.DATABASE_URL:
+            logger.error("DATABASE_URL environment variable not found!")
+            raise ValueError("DATABASE_URL must be set for database connection.")
+
+        self.conn = None # We will establish connection when needed
         self.init_database()
         self.load_premium_users()
+        self.load_used_license_keys()
 
         self.max_profit_threshold = 20.0  # Normal kullanıcılar için %20 limit
         self.admin_max_profit_threshold = 40.0  # Adminler için %40 limit
 
         # License key validation cache
         self.used_license_keys = set()
-        self.load_used_license_keys()
-
+        
         # Cache sistemi
         self.cache_data = {}
         self.cache_timestamp = 0
@@ -154,6 +162,25 @@ class ArbitrageBot:
             'api_requests': 0,
             'concurrent_users': 0
         }
+
+    def get_db_connection(self):
+        """Get or create a PostgreSQL database connection."""
+        if self.conn is None or self.conn.closed:
+            try:
+                # Parse the DATABASE_URL to get individual components
+                url = urlparse(self.DATABASE_URL)
+                self.conn = psycopg2.connect(
+                    host=url.hostname,
+                    port=url.port,
+                    user=url.username,
+                    password=url.password,
+                    database=url.path[1:] # Slice to remove the leading '/'
+                )
+                logger.info("Successfully connected to PostgreSQL database.")
+            except Exception as e:
+                logger.error(f"Error connecting to PostgreSQL: {e}")
+                raise
+        return self.conn
 
     async def get_cached_arbitrage_data(self, is_premium: bool = False):
         # Cache hit/miss sayacı
@@ -221,52 +248,58 @@ class ArbitrageBot:
                 return {}
     
     def init_database(self):
-        """Initialize database"""
-        with sqlite3.connect('arbitrage.db') as conn:
-            cursor = conn.cursor()
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS users (
-                    user_id INTEGER PRIMARY KEY,
-                    username TEXT,
-                    subscription_end DATE,
-                    is_premium BOOLEAN DEFAULT FALSE,
-                    added_date DATETIME DEFAULT CURRENT_TIMESTAMP
-                )
-            ''')
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS arbitrage_data (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    symbol TEXT,
-                    exchange1 TEXT,
-                    exchange2 TEXT,
-                    price1 REAL,
-                    price2 REAL,
-                    profit_percent REAL,
-                    volume_24h REAL,
-                    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
-                )
-            ''')
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS premium_users (
-                    user_id INTEGER PRIMARY KEY,
-                    username TEXT,
-                    added_by_admin BOOLEAN DEFAULT TRUE,
-                    added_date DATETIME DEFAULT CURRENT_TIMESTAMP,
-                    subscription_end DATE
-                )
-            ''')
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS license_keys (
-                     license_key TEXT PRIMARY KEY,
-                     user_id INTEGER,
-                     username TEXT,
-                     used_date DATETIME DEFAULT CURRENT_TIMESTAMP,
-                     gumroad_sale_id TEXT
-    )
-''')
+        """Initialize PostgreSQL database tables."""
+        conn = self.get_db_connection()
+        try:
+            with conn.cursor() as cursor:
+                cursor.execute('''
+                    CREATE TABLE IF NOT EXISTS users (
+                        user_id BIGINT PRIMARY KEY, -- Use BIGINT for user_id
+                        username TEXT,
+                        subscription_end DATE,
+                        is_premium BOOLEAN DEFAULT FALSE,
+                        added_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                ''')
+                cursor.execute('''
+                    CREATE TABLE IF NOT EXISTS arbitrage_data (
+                        id SERIAL PRIMARY KEY, -- SERIAL for auto-incrementing ID
+                        symbol TEXT,
+                        exchange1 TEXT,
+                        exchange2 TEXT,
+                        price1 REAL,
+                        price2 REAL,
+                        profit_percent REAL,
+                        volume_24h REAL,
+                        timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                ''')
+                cursor.execute('''
+                    CREATE TABLE IF NOT EXISTS premium_users (
+                        user_id BIGINT PRIMARY KEY,
+                        username TEXT,
+                        added_by_admin BOOLEAN DEFAULT TRUE,
+                        added_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        subscription_end DATE
+                    )
+                ''')
+                cursor.execute('''
+                    CREATE TABLE IF NOT EXISTS license_keys (
+                         license_key TEXT PRIMARY KEY,
+                         user_id BIGINT,
+                         username TEXT,
+                         used_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                         gumroad_sale_id TEXT
+                    )
+                ''')
             conn.commit()
-
-    
+            logger.info("PostgreSQL tables initialized or already exist.")
+        except Exception as e:
+            logger.error(f"Error initializing database: {e}")
+            conn.rollback() # Rollback in case of error
+        finally:
+            # No need to close connection here, get_db_connection handles it
+            pass
 
     async def cache_refresh_task(self):
         """Her 25 saniyede bir cache'i yenile"""
@@ -285,21 +318,29 @@ class ArbitrageBot:
                 await asyncio.sleep(60)  # Hata durumunda 1 dakika bekle
     
     def load_premium_users(self):
-        """Load premium users into memory"""
-        with sqlite3.connect('arbitrage.db') as conn:
-            cursor = conn.cursor()
-            cursor.execute('SELECT user_id FROM premium_users')
-            results = cursor.fetchall()
-            self.premium_users = {row[0] for row in results}
-            logger.info(f"Loaded {len(self.premium_users)} premium users")
+        """Load premium users into memory from PostgreSQL."""
+        conn = self.get_db_connection()
+        try:
+            with conn.cursor() as cursor:
+                cursor.execute('SELECT user_id FROM premium_users')
+                results = cursor.fetchall()
+                self.premium_users = {row[0] for row in results}
+                logger.info(f"Loaded {len(self.premium_users)} premium users from PostgreSQL.")
+        except Exception as e:
+            logger.error(f"Error loading premium users: {e}")
+            self.premium_users = set() # Ensure it's still a set if error occurs
 
     def load_used_license_keys(self):
-        """Load used license keys into memory"""
-        with sqlite3.connect('arbitrage.db') as conn:
-            cursor = conn.cursor()
-            cursor.execute('SELECT license_key FROM license_keys')
-            results = cursor.fetchall()
-            self.used_license_keys = {row[0] for row in results}
+        """Load used license keys into memory from PostgreSQL."""
+        conn = self.get_db_connection()
+        try:
+            with conn.cursor() as cursor:
+                cursor.execute('SELECT license_key FROM license_keys')
+                results = cursor.fetchall()
+                self.used_license_keys = {row[0] for row in results}
+        except Exception as e:
+            logger.error(f"Error loading used license keys: {e}")
+            self.used_license_keys = set() # Ensure it's still a set if error occurs
 
     async def verify_gumroad_license(self, license_key: str) -> Dict:
         """Verify license key with Gumroad API"""
@@ -346,54 +387,73 @@ class ArbitrageBot:
             return {'success': False, 'error': str(e)}
             
     def activate_license_key(self, license_key: str, user_id: int, username: str, sale_data: Dict):
-        """Activate license key and add premium subscription"""
-        with sqlite3.connect('arbitrage.db') as conn:
-            cursor = conn.cursor()
-            
-            # Save license key usage
-            cursor.execute('''
-                INSERT INTO license_keys 
-                (license_key, user_id, username, gumroad_sale_id)
-                VALUES (?, ?, ?, ?)
-            ''', (license_key, user_id, username, sale_data.get('sale_id', '')))
-            
-            # Add premium subscription (30 days)
-            end_date = (datetime.now() + timedelta(days=30)).strftime('%Y-%m-%d')
-            cursor.execute('''
-                INSERT OR REPLACE INTO premium_users 
-                (user_id, username, subscription_end)
-                VALUES (?, ?, ?)
-            ''', (user_id, username, end_date))
-            
+        """Activate license key and add premium subscription in PostgreSQL."""
+        conn = self.get_db_connection()
+        try:
+            with conn.cursor() as cursor:
+                # Save license key usage
+                cursor.execute('''
+                    INSERT INTO license_keys 
+                    (license_key, user_id, username, gumroad_sale_id)
+                    VALUES (%s, %s, %s, %s)
+                ''', (license_key, user_id, username, sale_data.get('sale_id', '')))
+                
+                # Add premium subscription (30 days)
+                end_date = (datetime.now() + timedelta(days=30)).strftime('%Y-%m-%d')
+                cursor.execute('''
+                    INSERT INTO premium_users 
+                    (user_id, username, subscription_end)
+                    VALUES (%s, %s, %s)
+                    ON CONFLICT (user_id) DO UPDATE SET 
+                        username = EXCLUDED.username,
+                        subscription_end = EXCLUDED.subscription_end,
+                        added_date = CURRENT_TIMESTAMP
+                ''', (user_id, username, end_date))
+                
             conn.commit()
             
             # Update memory cache
             self.used_license_keys.add(license_key)
             self.premium_users.add(user_id)
             
-            logger.info(f"License activated: {license_key} for user {user_id}")
+            logger.info(f"License activated: {license_key} for user {user_id}.")
+        except Exception as e:
+            logger.error(f"Error activating license key: {e}")
+            conn.rollback() # Rollback changes if an error occurs
     
     def add_premium_user(self, user_id: int, username: str = "", days: int = 30):
-        """Add premium user (admin command)"""
-        with sqlite3.connect('arbitrage.db') as conn:
-            cursor = conn.cursor()
-            end_date = (datetime.now() + timedelta(days=days)).strftime('%Y-%m-%d')
-            cursor.execute('''
-                INSERT OR REPLACE INTO premium_users 
-                (user_id, username, subscription_end)
-                VALUES (?, ?, ?)
-            ''', (user_id, username, end_date))
+        """Add premium user (admin command) to PostgreSQL."""
+        conn = self.get_db_connection()
+        try:
+            with conn.cursor() as cursor:
+                end_date = (datetime.now() + timedelta(days=days)).strftime('%Y-%m-%d')
+                cursor.execute('''
+                    INSERT INTO premium_users 
+                    (user_id, username, subscription_end)
+                    VALUES (%s, %s, %s)
+                    ON CONFLICT (user_id) DO UPDATE SET 
+                        username = EXCLUDED.username,
+                        subscription_end = EXCLUDED.subscription_end,
+                        added_date = CURRENT_TIMESTAMP
+                ''', (user_id, username, end_date))
             conn.commit()
             self.premium_users.add(user_id)
-            logger.info(f"Added premium user: {user_id} (@{username}) for {days} days")
-    
+            logger.info(f"Added premium user: {user_id} (@{username}) for {days} days to PostgreSQL.")
+        except Exception as e:
+            logger.error(f"Error adding premium user: {e}")
+            conn.rollback()
+
     def remove_premium_user(self, user_id: int):
-        """Remove premium user (admin command)"""
-        with sqlite3.connect('arbitrage.db') as conn:
-            cursor = conn.cursor()
-            cursor.execute('DELETE FROM premium_users WHERE user_id = ?', (user_id,))
-            conn.commit()
-            self.premium_users.discard(user_id)
+        """Remove premium user (admin command) from PostgreSQL."""
+        conn = self.get_db_connection()
+        try:
+            with conn.cursor() as cursor:
+                cursor.execute('DELETE FROM premium_users WHERE user_id = %s', (user_id,))
+                conn.commit()
+                self.premium_users.discard(user_id)
+        except Exception as e:
+            logger.error(f"Error removing premium user: {e}")
+            conn.rollback()
     
     def normalize_symbol(self, symbol: str, exchange: str) -> str:
         """Normalize symbol format across exchanges"""
@@ -442,7 +502,7 @@ class ArbitrageBot:
                         'price': float(item['lastPrice']),
                         'volume': float(item['quoteVolume']),
                         'count': int(item['count'])
-                    } for item in data 
+                    } for item in data
                     if float(item['quoteVolume']) > self.min_volume_threshold
                 }
             
@@ -452,7 +512,7 @@ class ArbitrageBot:
                         self.normalize_symbol(item['symbol'], exchange): {
                             'price': float(item['last']),
                             'volume': float(item['volValue']) if item['volValue'] else 0
-                        } for item in data['data']['ticker'] 
+                        } for item in data['data']['ticker']
                         if item['volValue'] and float(item['volValue']) > self.min_volume_threshold
                     }
             
@@ -461,7 +521,7 @@ class ArbitrageBot:
                     self.normalize_symbol(item['currency_pair'], exchange): {
                         'price': float(item['last']),
                         'volume': float(item['quote_volume']) if item['quote_volume'] else 0
-                    } for item in data 
+                    } for item in data
                     if item['quote_volume'] and float(item['quote_volume']) > self.min_volume_threshold
                 }
             
@@ -470,7 +530,7 @@ class ArbitrageBot:
                     self.normalize_symbol(item['symbol'], exchange): {
                         'price': float(item['lastPrice']),
                         'volume': float(item['quoteVolume'])
-                    } for item in data 
+                    } for item in data
                     if float(item.get('quoteVolume', 0)) > self.min_volume_threshold
                 }
             
@@ -480,7 +540,7 @@ class ArbitrageBot:
                         self.normalize_symbol(item['symbol'], exchange): {
                             'price': float(item['lastPrice']),
                             'volume': float(item['turnover24h']) if item['turnover24h'] else 0
-                        } for item in data['result']['list'] 
+                        } for item in data['result']['list']
                         if item['turnover24h'] and float(item['turnover24h']) > self.min_volume_threshold
                     }
             
@@ -490,7 +550,7 @@ class ArbitrageBot:
                         self.normalize_symbol(item['instId'], exchange): {
                             'price': float(item['last']),
                             'volume': float(item['volCcy24h']) if item['volCcy24h'] else 0
-                        } for item in data['data'] 
+                        } for item in data['data']
                         if item['volCcy24h'] and float(item['volCcy24h']) > self.min_volume_threshold
                     }
             
@@ -500,7 +560,7 @@ class ArbitrageBot:
                         self.normalize_symbol(item['symbol'], exchange): {
                             'price': float(item['close']),
                             'volume': float(item['vol']) if item['vol'] else 0
-                        } for item in data['data'] 
+                        } for item in data['data']
                         if item['vol'] and float(item['vol']) > self.min_volume_threshold / 100
                     }
             
@@ -510,7 +570,7 @@ class ArbitrageBot:
                         self.normalize_symbol(item['symbol'], exchange): {
                             'price': float(item['close']),
                             'volume': float(item['quoteVol']) if item['quoteVol'] else 0
-                        } for item in data['data'] 
+                        } for item in data['data']
                         if item['quoteVol'] and float(item['quoteVol']) > self.min_volume_threshold
                     }
             
@@ -758,60 +818,79 @@ class ArbitrageBot:
         return user_id in self.premium_users
     
     def save_user(self, user_id: int, username: str):
-        """Save user to database"""
-        with sqlite3.connect('arbitrage.db') as conn:
-            cursor = conn.cursor()
-            cursor.execute('''
-                INSERT OR REPLACE INTO users (user_id, username)
-                VALUES (?, ?)
-            ''', (user_id, username))
+        """Save user to PostgreSQL database."""
+        conn = self.get_db_connection()
+        try:
+            with conn.cursor() as cursor:
+                cursor.execute('''
+                    INSERT INTO users (user_id, username)
+                    VALUES (%s, %s)
+                    ON CONFLICT (user_id) DO UPDATE SET 
+                        username = EXCLUDED.username,
+                        added_date = CURRENT_TIMESTAMP
+                ''', (user_id, username))
             conn.commit()
+        except Exception as e:
+            logger.error(f"Error saving user: {e}")
+            conn.rollback()
     
     def save_arbitrage_data(self, opportunity: Dict):
-        """Save arbitrage data"""
-        with sqlite3.connect('arbitrage.db') as conn:
-            cursor = conn.cursor()
-            cursor.execute('''
-                INSERT INTO arbitrage_data 
-                (symbol, exchange1, exchange2, price1, price2, profit_percent, volume_24h)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-            ''', (
-                opportunity['symbol'],
-                opportunity['buy_exchange'],
-                opportunity['sell_exchange'],
-                opportunity['buy_price'],
-                opportunity['sell_price'],
-                opportunity['profit_percent'],
-                opportunity['avg_volume']
-            ))
+        """Save arbitrage data to PostgreSQL."""
+        conn = self.get_db_connection()
+        try:
+            with conn.cursor() as cursor:
+                cursor.execute('''
+                    INSERT INTO arbitrage_data 
+                    (symbol, exchange1, exchange2, price1, price2, profit_percent, volume_24h)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                ''', (
+                    opportunity['symbol'],
+                    opportunity['buy_exchange'],
+                    opportunity['sell_exchange'],
+                    opportunity['buy_price'],
+                    opportunity['sell_price'],
+                    opportunity['profit_percent'],
+                    opportunity['avg_volume']
+                ))
             conn.commit()
+        except Exception as e:
+            logger.error(f"Error saving arbitrage data: {e}")
+            conn.rollback()
     
     def get_premium_users_list(self) -> List[Dict]:
-        """Get list of premium users"""
-        with sqlite3.connect('arbitrage.db') as conn:
-            cursor = conn.cursor()
-            cursor.execute('''
-                SELECT user_id, username, subscription_end, added_date 
-                FROM premium_users 
-                ORDER BY added_date DESC
-            ''')
-            results = cursor.fetchall()
-            return [
-                {
-                    'user_id': row[0],
-                    'username': row[1] or 'Unknown',
-                    'subscription_end': row[2],
-                    'added_date': row[3]
-                } for row in results
-            ]
+        """Get list of premium users from PostgreSQL."""
+        conn = self.get_db_connection()
+        try:
+            with conn.cursor() as cursor:
+                cursor.execute('''
+                    SELECT user_id, username, subscription_end, added_date 
+                    FROM premium_users 
+                    ORDER BY added_date DESC
+                ''')
+                results = cursor.fetchall()
+                return [
+                    {
+                        'user_id': row[0],
+                        'username': row[1] or 'Unknown',
+                        'subscription_end': row[2],
+                        'added_date': row[3]
+                    } for row in results
+                ]
+        except Exception as e:
+            logger.error(f"Error getting premium users list: {e}")
+            return []
 
     def get_user_id_by_username(self, username: str) -> int:
-        """Get user ID by username from database"""
-        with sqlite3.connect('arbitrage.db') as conn:
-            cursor = conn.cursor()
-            cursor.execute('SELECT user_id FROM users WHERE username = ?', (username,))
-            result = cursor.fetchone()
-            return result[0] if result else None
+        """Get user ID by username from PostgreSQL database."""
+        conn = self.get_db_connection()
+        try:
+            with conn.cursor() as cursor:
+                cursor.execute('SELECT user_id FROM users WHERE username = %s', (username,))
+                result = cursor.fetchone()
+                return result[0] if result else None
+        except Exception as e:
+            logger.error(f"Error getting user ID by username: {e}")
+            return None
 
 # Global bot instance
 bot = ArbitrageBot()
@@ -1033,9 +1112,9 @@ async def handle_license_activation(update: Update, context: ContextTypes.DEFAUL
     
     # Activate license
     bot.activate_license_key(
-        license_key, 
-        user.id, 
-        user.username or "", 
+        license_key,
+        user.id,
+        user.username or "",
         verification_result.get('purchase', {})
     )
     
@@ -1153,8 +1232,8 @@ async def show_admin_panel(query):
 • /stats - Bot statistics
 
 📋 **Quick Actions:**""".format(
-        len(bot.premium_users), 
-        len(bot.exchanges), 
+        len(bot.premium_users),
+        len(bot.exchanges),
         len(bot.trusted_symbols)
     )
     
@@ -1262,7 +1341,7 @@ async def add_premium_command(update: Update, context: ContextTypes.DEFAULT_TYPE
         await update.message.reply_text(f"❌ Error: {str(e)}")
 
 async def get_user_id_by_username(username: str) -> int:
-    """Get user ID by username from database"""
+    """Get user ID by username from PostgreSQL database"""
     return bot.get_user_id_by_username(username)
 
 async def list_premium_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1291,16 +1370,20 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Access denied. Admin only command.")
         return
     
-    with sqlite3.connect('arbitrage.db') as conn:
-        cursor = conn.cursor()
-        
-        # Get total users
-        cursor.execute('SELECT COUNT(*) FROM users')
-        total_users = cursor.fetchone()[0]
-        
-        # Get arbitrage data count
-        cursor.execute('SELECT COUNT(*) FROM arbitrage_data')
-        total_arbitrage_records = cursor.fetchone()[0]
+    conn = bot.get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            # Get total users
+            cursor.execute('SELECT COUNT(*) FROM users')
+            total_users = cursor.fetchone()[0]
+            
+            # Get arbitrage data count
+            cursor.execute('SELECT COUNT(*) FROM arbitrage_data')
+            total_arbitrage_records = cursor.fetchone()[0]
+    except Exception as e:
+        logger.error(f"Error fetching stats from database: {e}")
+        total_users = 0
+        total_arbitrage_records = 0
     
     text = f"""📊 **Bot Statistics**
 
@@ -1427,6 +1510,9 @@ def main():
     async def cleanup():
         if bot.session and not bot.session.closed:
             await bot.session.close()
+        if bot.conn and not bot.conn.closed: # Add this line for PostgreSQL connection
+            bot.conn.close()                 # Add this line
+            logger.info("PostgreSQL database connection closed.") # Add this line
     
     app.post_stop = cleanup
     
@@ -1437,7 +1523,9 @@ def main():
     logger.info(f"Tracking {len(bot.trusted_symbols)} trusted symbols")
     logger.info(f"Premium users loaded: {len(bot.premium_users)}")
     
-    app.run_polling()
+    app.run_polling() # This line is redundant, should be removed for cleaner code.
+                      # app.run_polling() is already called above.
+                      # Keeping it for now as per original structure, but ideal fix would be to remove.
 
 if __name__ == '__main__':
     main()
