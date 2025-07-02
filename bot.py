@@ -724,35 +724,47 @@ class ArbitrageBot:
     def is_symbol_safe(self, symbol: str, exchange_data: Dict[str, Dict]) -> Tuple[bool, str]:
         """Check if symbol is safe for arbitrage and return reason."""
         
+        logger.info(f"Checking safety for symbol: {symbol}")
+        logger.info(f"Exchange data for {symbol}: {exchange_data}")
+
         # 1. Trusted symbols list
         if symbol in self.trusted_symbols:
+            logger.info(f"{symbol} is a trusted symbol.")
             return (True, "✅ Trusted symbol with verified history and high liquidity.")
         
         # 2. Extract volumes and filter non-zero
         volumes = [data.get('volume', 0) for data in exchange_data.values()]
         non_zero_volumes = [v for v in volumes if v > 0]
+        logger.info(f"Non-zero volumes for {symbol}: {non_zero_volumes}")
 
         if not non_zero_volumes:
+            logger.warning(f"No current volume data available for {symbol}.")
             return (False, "❌ No current volume data available on any exchange.")
 
         total_volume = sum(non_zero_volumes)
         exchanges_with_sufficient_volume = sum(1 for v in non_zero_volumes if v >= self.min_volume_threshold)
+        logger.info(f"Total volume for {symbol}: ${total_volume:,.0f}, Exchanges with sufficient volume: {exchanges_with_sufficient_volume}")
         
         # 3. Suspicious symbol check
         base_symbol = symbol.replace('USDT', '').replace('USDC', '').replace('BUSD', '')
         is_suspicious_name = any(suspicious in base_symbol.upper() for suspicious in self.suspicious_symbols)
+        logger.info(f"Is {symbol} a suspicious name? {is_suspicious_name}")
 
         if is_suspicious_name:
             if total_volume > self.min_volume_threshold * 5 and exchanges_with_sufficient_volume >= 3: # Require more exchanges for suspicious names
+                logger.info(f"Suspicious symbol {symbol} deemed safe due to high volume and sufficient exchanges.")
                 return (True, f"🔍 Symbol has a suspicious name, but is deemed safe due to high total volume (${total_volume:,.0f}) and presence on {exchanges_with_sufficient_volume} major exchanges.")
             else:
+                logger.warning(f"Suspicious symbol {symbol} deemed unsafe. Total volume: ${total_volume:,.0f}, Exchanges with sufficient volume: {exchanges_with_sufficient_volume}.")
                 return (False, f"❌ Symbol has a suspicious name. Total volume (${total_volume:,.0f}) is insufficient or not present on enough major exchanges ({exchanges_with_sufficient_volume} of minimum 3 needed for suspicious symbols).")
 
         # 4. General safety checks for non-trusted, non-suspicious symbols
         if total_volume < self.min_volume_threshold * 2: # Require higher total volume for non-trusted symbols
+            logger.warning(f"Total volume for {symbol} (${total_volume:,.0f}) is below the required threshold (${self.min_volume_threshold * 2:,.0f}).")
             return (False, f"❌ Total volume (${total_volume:,.0f}) is below the required threshold (${self.min_volume_threshold * 2:,.0f}).")
         
         if exchanges_with_sufficient_volume < 2:
+            logger.warning(f"{symbol} found on only {exchanges_with_sufficient_volume} exchange(s) with sufficient volume (minimum 2 required).")
             return (False, f"❌ Found on only {exchanges_with_sufficient_volume} exchange(s) with sufficient volume (minimum 2 required).")
 
         # 5. Volume differences too large? (one exchange very high, another very low)
@@ -760,8 +772,10 @@ class ArbitrageBot:
             max_vol = max(non_zero_volumes)
             min_vol = min(non_zero_volumes)
             if min_vol > 0 and max_vol > min_vol * 100:  # 100x difference is suspicious
+                logger.warning(f"Significant volume discrepancy detected for {symbol}. Max volume (${max_vol:,.0f}) is more than 100x minimum volume (${min_vol:,.0f}).")
                 return (False, f"❌ Significant volume discrepancy detected. Max volume (${max_vol:,.0f}) is more than 100x minimum volume (${min_vol:,.0f}), indicating potential liquidity issues or data anomalies.")
 
+        logger.info(f"{symbol} met general safety criteria.")
         return (True, f"✅ General safety criteria met: Sufficient total volume (${total_volume:,.0f}) and presence on {exchanges_with_sufficient_volume} exchanges.")
     
     def validate_arbitrage_opportunity(self, opportunity: Dict) -> bool:
