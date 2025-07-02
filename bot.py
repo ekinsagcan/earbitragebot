@@ -472,9 +472,9 @@ class ArbitrageBot:
     
     async def fetch_prices_with_volume(self, exchange: str) -> Dict[str, Dict]:
         """Fetch prices and volumes from exchange"""
-        try:
-            timeout = aiohttp.ClientTimeout(total=15)
-            async with aiohttp.ClientSession(timeout=timeout) as session:
+        async with self.request_semaphore: # This semaphore is correctly used here
+            try:
+                session = await self.get_session() # Use the shared session
                 url = self.exchanges[exchange]
                 
                 headers = {
@@ -489,9 +489,9 @@ class ArbitrageBot:
                     data = await response.json()
                     return self.parse_exchange_data(exchange, data)
                     
-        except Exception as e:
-            logger.error(f"{exchange} price/volume error: {str(e)}")
-            return {}
+            except Exception as e:
+                logger.error(f"{exchange} price/volume error: {str(e)}")
+                return {}
     
     def parse_exchange_data(self, exchange: str, data) -> Dict[str, Dict]:
         """Parse exchange-specific data format"""
