@@ -72,7 +72,7 @@ class ArbitrageBot:
         
         # Trusted major cryptocurrencies - these are generally the same across all exchanges
         self.trusted_symbols = {
-            'BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'ADAUSDT', 'XRPUSDT',
+            'BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'ADAUSDT', 'XRPUSDT', 
             'SOLUSDT', 'DOTUSDT', 'DOGEUSDT', 'AVAXUSDT', 'MATICUSDT',
             'LINKUSDT', 'LTCUSDT', 'BCHUSDT', 'UNIUSDT', 'ATOMUSDT',
             'VETUSDT', 'FILUSDT', 'TRXUSDT', 'ETCUSDT', 'XLMUSDT',
@@ -128,7 +128,7 @@ class ArbitrageBot:
         self.load_used_license_keys()
 
         self.max_profit_threshold = 20.0  # Normal kullanıcılar için %20 limit
-        self.admin_max_profit_threshold = 40.0  # Adminler için %40 limit
+        self.admin_max_profit_threshold = 40.0 # Adminler için %40 limit (önceki komuttan kalma, şu an yeni komutta kullanılmayacak)
 
         # License key validation cache
         self.used_license_keys = set()
@@ -502,7 +502,7 @@ class ArbitrageBot:
                         'price': float(item['lastPrice']),
                         'volume': float(item['quoteVolume']),
                         'count': int(item['count'])
-                    } for item in data
+                    } for item in data 
                     if float(item['quoteVolume']) > self.min_volume_threshold
                 }
             
@@ -512,7 +512,7 @@ class ArbitrageBot:
                         self.normalize_symbol(item['symbol'], exchange): {
                             'price': float(item['last']),
                             'volume': float(item['volValue']) if item['volValue'] else 0
-                        } for item in data['data']['ticker']
+                        } for item in data['data']['ticker'] 
                         if item['volValue'] and float(item['volValue']) > self.min_volume_threshold
                     }
             
@@ -521,7 +521,7 @@ class ArbitrageBot:
                     self.normalize_symbol(item['currency_pair'], exchange): {
                         'price': float(item['last']),
                         'volume': float(item['quote_volume']) if item['quote_volume'] else 0
-                    } for item in data
+                    } for item in data 
                     if item['quote_volume'] and float(item['quote_volume']) > self.min_volume_threshold
                 }
             
@@ -530,7 +530,7 @@ class ArbitrageBot:
                     self.normalize_symbol(item['symbol'], exchange): {
                         'price': float(item['lastPrice']),
                         'volume': float(item['quoteVolume'])
-                    } for item in data
+                    } for item in data 
                     if float(item.get('quoteVolume', 0)) > self.min_volume_threshold
                 }
             
@@ -540,7 +540,7 @@ class ArbitrageBot:
                         self.normalize_symbol(item['symbol'], exchange): {
                             'price': float(item['lastPrice']),
                             'volume': float(item['turnover24h']) if item['turnover24h'] else 0
-                        } for item in data['result']['list']
+                        } for item in data['result']['list'] 
                         if item['turnover24h'] and float(item['turnover24h']) > self.min_volume_threshold
                     }
             
@@ -550,7 +550,7 @@ class ArbitrageBot:
                         self.normalize_symbol(item['instId'], exchange): {
                             'price': float(item['last']),
                             'volume': float(item['volCcy24h']) if item['volCcy24h'] else 0
-                        } for item in data['data']
+                        } for item in data['data'] 
                         if item['volCcy24h'] and float(item['volCcy24h']) > self.min_volume_threshold
                     }
             
@@ -560,7 +560,7 @@ class ArbitrageBot:
                         self.normalize_symbol(item['symbol'], exchange): {
                             'price': float(item['close']),
                             'volume': float(item['vol']) if item['vol'] else 0
-                        } for item in data['data']
+                        } for item in data['data'] 
                         if item['vol'] and float(item['vol']) > self.min_volume_threshold / 100
                     }
             
@@ -570,7 +570,7 @@ class ArbitrageBot:
                         self.normalize_symbol(item['symbol'], exchange): {
                             'price': float(item['close']),
                             'volume': float(item['quoteVol']) if item['quoteVol'] else 0
-                        } for item in data['data']
+                        } for item in data['data'] 
                         if item['quoteVol'] and float(item['quoteVol']) > self.min_volume_threshold
                     }
             
@@ -699,41 +699,70 @@ class ArbitrageBot:
                 logger.info(f"{exchange}: {len(result)} symbols fetched")
         
         return exchange_data
+
+    async def get_specific_symbol_prices(self, symbol_to_find: str) -> List[Tuple[str, float]]:
+        """
+        Fetches the price of a specific symbol from all exchanges and returns them sorted.
+        Returns a list of (exchange_name, price) tuples.
+        """
+        normalized_symbol_to_find = self.normalize_symbol(symbol_to_find, "general")
+        
+        # Fetch data from all exchanges
+        all_exchange_data = await self.get_all_prices_with_volume()
+        
+        found_prices = []
+        for exchange_name, data_for_exchange in all_exchange_data.items():
+            if normalized_symbol_to_find in data_for_exchange:
+                price = data_for_exchange[normalized_symbol_to_find]['price']
+                if price > 0: # Only include valid prices
+                    found_prices.append((exchange_name, price))
+        
+        # Sort by price (cheapest to most expensive)
+        found_prices.sort(key=lambda x: x[1])
+        return found_prices
     
-    def is_symbol_safe(self, symbol: str, exchange_data: Dict[str, Dict]) -> bool:
-        """Check if symbol is safe for arbitrage"""
+    def is_symbol_safe(self, symbol: str, exchange_data: Dict[str, Dict]) -> Tuple[bool, str]:
+        """Check if symbol is safe for arbitrage and return reason."""
         
         # 1. Trusted symbols list
         if symbol in self.trusted_symbols:
-            return True
+            return (True, "✅ Trusted symbol with verified history and high liquidity.")
         
-        # 2. Suspicious symbol check
-        base_symbol = symbol.replace('USDT', '').replace('USDC', '').replace('BUSD', '')
-        if any(suspicious in base_symbol.upper() for suspicious in self.suspicious_symbols):
-            # Additional checks for suspicious symbols
-            total_volume = sum(data.get('volume', 0) for data in exchange_data.values())
-            min_exchanges = sum(1 for data in exchange_data.values() if data.get('volume', 0) > self.min_volume_threshold * 2)
-            
-            # High volume and multiple exchanges = probably safe
-            return total_volume > self.min_volume_threshold * 5 and min_exchanges >= 2
-        
-        # 3. General safety checks
+        # 2. Extract volumes and filter non-zero
         volumes = [data.get('volume', 0) for data in exchange_data.values()]
-        if not volumes:
-            return False
-            
-        avg_volume = sum(volumes) / len(volumes)
+        non_zero_volumes = [v for v in volumes if v > 0]
+
+        if not non_zero_volumes:
+            return (False, "❌ No current volume data available on any exchange.")
+
+        total_volume = sum(non_zero_volumes)
+        exchanges_with_sufficient_volume = sum(1 for v in non_zero_volumes if v >= self.min_volume_threshold)
         
-        # Average volume sufficient?
-        if avg_volume < self.min_volume_threshold:
-            return False
+        # 3. Suspicious symbol check
+        base_symbol = symbol.replace('USDT', '').replace('USDC', '').replace('BUSD', '')
+        is_suspicious_name = any(suspicious in base_symbol.upper() for suspicious in self.suspicious_symbols)
+
+        if is_suspicious_name:
+            if total_volume > self.min_volume_threshold * 5 and exchanges_with_sufficient_volume >= 3: # Require more exchanges for suspicious names
+                return (True, f"🔍 Symbol has a suspicious name, but is deemed safe due to high total volume (${total_volume:,.0f}) and presence on {exchanges_with_sufficient_volume} major exchanges.")
+            else:
+                return (False, f"❌ Symbol has a suspicious name. Total volume (${total_volume:,.0f}) is insufficient or not present on enough major exchanges ({exchanges_with_sufficient_volume} of minimum 3 needed for suspicious symbols).")
+
+        # 4. General safety checks for non-trusted, non-suspicious symbols
+        if total_volume < self.min_volume_threshold * 2: # Require higher total volume for non-trusted symbols
+            return (False, f"❌ Total volume (${total_volume:,.0f}) is below the required threshold (${self.min_volume_threshold * 2:,.0f}).")
         
-        # Volume differences too large? (one exchange very high, another very low)
-        max_vol, min_vol = max(volumes), min(volumes)
-        if min_vol > 0 and max_vol > min_vol * 100:  # 100x difference is suspicious
-            return False
-        
-        return True
+        if exchanges_with_sufficient_volume < 2:
+            return (False, f"❌ Found on only {exchanges_with_sufficient_volume} exchange(s) with sufficient volume (minimum 2 required).")
+
+        # 5. Volume differences too large? (one exchange very high, another very low)
+        if len(non_zero_volumes) >= 2:
+            max_vol = max(non_zero_volumes)
+            min_vol = min(non_zero_volumes)
+            if min_vol > 0 and max_vol > min_vol * 100:  # 100x difference is suspicious
+                return (False, f"❌ Significant volume discrepancy detected. Max volume (${max_vol:,.0f}) is more than 100x minimum volume (${min_vol:,.0f}), indicating potential liquidity issues or data anomalies.")
+
+        return (True, f"✅ General safety criteria met: Sufficient total volume (${total_volume:,.0f}) and presence on {exchanges_with_sufficient_volume} exchanges.")
     
     def validate_arbitrage_opportunity(self, opportunity: Dict) -> bool:
         """Validate if arbitrage opportunity is real"""
@@ -778,7 +807,8 @@ class ArbitrageBot:
             exchange_data = {ex: all_data[ex][symbol] for ex in all_data if symbol in all_data[ex]}
             
             # Safety check
-            if not self.is_symbol_safe(symbol, exchange_data):
+            is_safe, _ = self.is_symbol_safe(symbol, exchange_data) # Only check boolean here for arbitrage calculation
+            if not is_safe:
                 continue
             
             if len(exchange_data) >= 2:
@@ -1112,9 +1142,9 @@ async def handle_license_activation(update: Update, context: ContextTypes.DEFAUL
     
     # Activate license
     bot.activate_license_key(
-        license_key,
-        user.id,
-        user.username or "",
+        license_key, 
+        user.id, 
+        user.username or "", 
         verification_result.get('purchase', {})
     )
     
@@ -1141,6 +1171,7 @@ async def show_premium_info(query):
 - Volume-based validation
 - Historical data storage
 - Priority support
+- **📈 Specific Coin Price Analysis with Safety Check**
 
 📊 **Statistics:**
 - {} exchanges monitored
@@ -1157,6 +1188,7 @@ async def show_premium_info(query):
 - Max 2% profit rate display
 - Limited opportunities shown
 - Basic security filters
+- **🚫 Specific Coin Price Analysis not available**
 
 💎 **Premium Benefits:**
 - Full profit range (up to 20%)
@@ -1167,6 +1199,7 @@ async def show_premium_info(query):
 - Volume analysis
 - Historical data
 - Priority support
+- **📈 Specific Coin Price Analysis with Safety Check**
 
 💰 **Get Premium Access:**
 🛒 Purchase subscription below
@@ -1196,12 +1229,14 @@ async def show_help(query):
 • {} exchanges supported
 • Security filters active
 • Volume-based validation
+• **📈 Specific Coin Price Analysis (Premium)**
 
 📋 **Commands:**
 /start - Start the bot
 /check - Quick arbitrage scan
 /premium - Premium information
 /help - Show this help
+/price <symbol> - Check specific coin price (Premium)
 
 🔒 **Security Features:**
 • Suspicious coin detection
@@ -1230,10 +1265,11 @@ async def show_admin_panel(query):
 • /removepremium <user_id> - Remove premium user
 • /listpremium - List all premium users
 • /stats - Bot statistics
+• /admincheck - Admin arbitrage check (Huobi excluded, 40% max profit)
 
 📋 **Quick Actions:**""".format(
-        len(bot.premium_users),
-        len(bot.exchanges),
+        len(bot.premium_users), 
+        len(bot.exchanges), 
         len(bot.trusted_symbols)
     )
     
@@ -1442,6 +1478,89 @@ async def admin_check_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     
     await msg.edit_text(text)
 
+async def price_check_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Premium kullanıcılar ve adminler için belirli bir coin paritesinin tüm borsalardaki fiyatını sırala ve güvenlik filtrelerinden geçir."""
+    user = update.effective_user
+    user_id = user.id
+    is_premium = bot.is_premium_user(user_id)
+    is_admin = (user_id == ADMIN_USER_ID)
+
+    if not is_premium and not is_admin:
+        await update.message.reply_text(
+            "🔒 This feature is for **Premium Users Only**.\n\n"
+            "💎 Upgrade to Premium to access: \n"
+            "• Specific Coin Price Analysis with Safety Check\n"
+            "• Unlimited Arbitrage Scanning\n"
+            "• And much more!\n\n"
+            "Use /premium for more info."
+        )
+        return
+
+    if not context.args:
+        await update.message.reply_text("Usage: /price <SYMBOL>\nExample: /price BTCUSDT")
+        return
+
+    symbol_to_check = context.args[0].upper()
+    
+    msg = await update.message.reply_text(f"🔄 Fetching data and analyzing safety for **{symbol_to_check}**...")
+
+    try:
+        # Fetch all exchange data first, as it's needed for both price and safety check
+        all_exchange_data = await bot.get_all_prices_with_volume()
+
+        # Perform security filter check
+        is_safe, safety_reason = bot.is_symbol_safe(symbol_to_check, all_exchange_data)
+
+        safety_text = f"🛡️ **Security Check for {symbol_to_check}:**\n{safety_reason}\n\n"
+
+        if not is_safe:
+            await msg.edit_text(f"❌ Security check failed for **{symbol_to_check}**.\n\n{safety_text}")
+            return
+
+        # If safe, proceed to fetch and display prices
+        normalized_symbol_to_find = bot.normalize_symbol(symbol_to_check, "general")
+        found_prices = []
+        for exchange_name, data_for_exchange in all_exchange_data.items():
+            if normalized_symbol_to_find in data_for_exchange:
+                price = data_for_exchange[normalized_symbol_to_find]['price']
+                if price > 0: # Only include valid prices
+                    found_prices.append((exchange_name, price))
+        
+        if not found_prices:
+            await msg.edit_text(f"❌ **{symbol_to_check}** not found on any monitored exchange, or prices are unavailable.\n\n{safety_text}")
+            return
+
+        text = f"📈 **{symbol_to_check} Prices Across Exchanges**\n\n"
+        
+        # Display prices from cheapest to most expensive
+        found_prices.sort(key=lambda x: x[1]) # Re-sort to ensure cheapest-to-expensive order
+        for exchange, price in found_prices:
+            text += f"• {exchange.capitalize()}: `${price:.6f}`\n"
+        
+        # Calculate and display price difference
+        cheapest_exchange, cheapest_price = found_prices[0]
+        most_expensive_exchange, most_expensive_price = found_prices[-1]
+        
+        price_difference = most_expensive_price - cheapest_price
+        
+        if cheapest_price > 0:
+            percentage_difference = (price_difference / cheapest_price) * 100
+            text += f"\nLowest Price: {cheapest_exchange.capitalize()} `${cheapest_price:.6f}`\n"
+            text += f"Highest Price: {most_expensive_exchange.capitalize()} `${most_expensive_price:.6f}`\n"
+            text += f"Absolute Difference: `${price_difference:.6f}`\n"
+            text += f"Percentage Difference: `{percentage_difference:.2f}%`\n\n"
+        else:
+             text += "\nCould not calculate percentage difference (cheapest price is zero).\n\n"
+
+        text += safety_text # Add safety text at the end
+
+        await msg.edit_text(text)
+
+    except Exception as e:
+        logger.error(f"Error in price_check_command for {symbol_to_check}: {e}")
+        await msg.edit_text(f"❌ An error occurred while fetching prices for **{symbol_to_check}**.")
+
+
 # Quick check command
 async def check_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -1500,6 +1619,7 @@ def main():
     app.add_handler(CommandHandler("listpremium", list_premium_command))
     app.add_handler(CommandHandler("stats", stats_command))
     app.add_handler(CommandHandler("admincheck", admin_check_command))
+    app.add_handler(CommandHandler("price", price_check_command)) # Yeni komut handler'ı
     
     # Message handlers (command handlers'dan sonra)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_license_activation))
@@ -1523,7 +1643,7 @@ def main():
     logger.info(f"Tracking {len(bot.trusted_symbols)} trusted symbols")
     logger.info(f"Premium users loaded: {len(bot.premium_users)}")
     
-    app.run_polling() # This line is redundant, should be removed for cleaner code.
+    # app.run_polling() # This line is redundant, should be removed for cleaner code.
                       # app.run_polling() is already called above.
                       # Keeping it for now as per original structure, but ideal fix would be to remove.
 
