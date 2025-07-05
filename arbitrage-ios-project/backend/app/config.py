@@ -10,7 +10,7 @@ class Settings(BaseSettings):
     redis_url: str = os.getenv("REDIS_URL", "redis://localhost:6379")
     
     # JWT
-    secret_key: str = os.getenv("SECRET_KEY", "your-secret-key-here")
+    secret_key: str = os.getenv("SECRET_KEY", "your-secret-key-here-change-in-production")
     algorithm: str = "HS256"
     access_token_expire_minutes: int = 30
     
@@ -38,8 +38,8 @@ class Settings(BaseSettings):
     max_requests_per_minute: int = 60
     max_concurrent_requests: int = 10
     
-    # Admin Users
-    admin_user_ids: list[int] = []
+    # CORS
+    allowed_origins: list[str] = ["*"]  # In production, specify exact origins
     
     class Config:
         env_file = ".env"
