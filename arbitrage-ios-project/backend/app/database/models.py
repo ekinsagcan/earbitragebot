@@ -1,4 +1,4 @@
-THIS SHOULD BE A LINTER ERRORfrom sqlalchemy import Column, Integer, String, Boolean, DateTime, Float, Text, BigInteger, Date
+from sqlalchemy import Column, Integer, String, Boolean, DateTime, Float, Text, BigInteger, Date
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.sql import func
 from datetime import datetime, date
@@ -36,11 +36,18 @@ class PremiumUser(Base):
     added_date = Column(DateTime, default=func.now())
     subscription_end = Column(Date, nullable=True)
 
-class LicenseKey(Base):
-    __tablename__ = "license_keys"
+class AppStoreSubscription(Base):
+    __tablename__ = "app_store_subscriptions"
     
-    license_key = Column(String, primary_key=True, index=True)
-    user_id = Column(BigInteger, nullable=True)
-    username = Column(String, nullable=True)
-    used_date = Column(DateTime, default=func.now())
-    gumroad_sale_id = Column(String, nullable=True)
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(BigInteger, nullable=False, index=True)
+    transaction_id = Column(String, nullable=False, unique=True)
+    original_transaction_id = Column(String, nullable=False)
+    product_id = Column(String, nullable=False)
+    purchase_date = Column(DateTime, nullable=False)
+    expires_date = Column(DateTime, nullable=True)
+    is_active = Column(Boolean, default=True)
+    auto_renew_status = Column(Boolean, default=True)
+    receipt_data = Column(Text, nullable=True)  # Store receipt for verification
+    created_at = Column(DateTime, default=func.now())
+    updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
