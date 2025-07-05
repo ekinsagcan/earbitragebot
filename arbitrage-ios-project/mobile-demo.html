@@ -1,0 +1,391 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CryptoArbitrage Pro - Mobile Demo</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            color: #333;
+        }
+        
+        .container {
+            max-width: 375px;
+            margin: 0 auto;
+            background: white;
+            min-height: 100vh;
+            position: relative;
+        }
+        
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 60px 20px 30px;
+            text-align: center;
+            border-radius: 0 0 20px 20px;
+        }
+        
+        .header h1 {
+            font-size: 24px;
+            margin-bottom: 8px;
+        }
+        
+        .header p {
+            opacity: 0.9;
+            font-size: 14px;
+        }
+        
+        .stats {
+            display: flex;
+            justify-content: space-around;
+            padding: 20px;
+            background: #f8f9ff;
+            margin: 20px;
+            border-radius: 12px;
+            border: 1px solid #e0e4ff;
+        }
+        
+        .stat {
+            text-align: center;
+        }
+        
+        .stat-number {
+            font-size: 20px;
+            font-weight: bold;
+            color: #667eea;
+        }
+        
+        .stat-label {
+            font-size: 12px;
+            color: #666;
+            margin-top: 4px;
+        }
+        
+        .opportunities {
+            padding: 0 20px;
+        }
+        
+        .opportunity-card {
+            background: white;
+            border: 1px solid #e1e5e9;
+            border-radius: 12px;
+            padding: 16px;
+            margin-bottom: 12px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+        }
+        
+        .opportunity-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 12px;
+        }
+        
+        .symbol {
+            font-size: 18px;
+            font-weight: bold;
+        }
+        
+        .profit {
+            color: #22c55e;
+            font-weight: bold;
+            font-size: 16px;
+        }
+        
+        .exchanges {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 12px;
+            font-size: 14px;
+        }
+        
+        .exchange {
+            text-align: center;
+            flex: 1;
+        }
+        
+        .exchange-name {
+            font-weight: 600;
+            text-transform: capitalize;
+        }
+        
+        .exchange-price {
+            color: #666;
+            font-size: 12px;
+        }
+        
+        .arrow {
+            font-size: 18px;
+            color: #667eea;
+            margin: 0 10px;
+        }
+        
+        .risk-info {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            font-size: 12px;
+        }
+        
+        .risk-badge {
+            padding: 4px 8px;
+            border-radius: 12px;
+            font-weight: 500;
+        }
+        
+        .risk-low {
+            background: #dcfce7;
+            color: #15803d;
+        }
+        
+        .risk-medium {
+            background: #fef3c7;
+            color: #d97706;
+        }
+        
+        .risk-high {
+            background: #fee2e2;
+            color: #dc2626;
+        }
+        
+        .volume {
+            color: #666;
+        }
+        
+        .refresh-btn {
+            position: fixed;
+            bottom: 30px;
+            right: 30px;
+            width: 56px;
+            height: 56px;
+            border-radius: 50%;
+            background: #667eea;
+            color: white;
+            border: none;
+            font-size: 24px;
+            cursor: pointer;
+            box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+            transition: transform 0.2s;
+        }
+        
+        .refresh-btn:active {
+            transform: scale(0.95);
+        }
+        
+        .loading {
+            text-align: center;
+            padding: 40px;
+            color: #666;
+        }
+        
+        .live-indicator {
+            display: inline-flex;
+            align-items: center;
+            font-size: 12px;
+            color: #22c55e;
+            margin-top: 8px;
+        }
+        
+        .live-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: #22c55e;
+            margin-right: 6px;
+            animation: pulse 2s infinite;
+        }
+        
+        @keyframes pulse {
+            0% { opacity: 1; }
+            50% { opacity: 0.5; }
+            100% { opacity: 1; }
+        }
+        
+        .demo-note {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            background: #fbbf24;
+            color: #92400e;
+            text-align: center;
+            padding: 8px;
+            font-size: 12px;
+            font-weight: 500;
+            z-index: 1000;
+        }
+    </style>
+</head>
+<body>
+    <div class="demo-note">
+        📱 MOBILE DEMO - Bu iOS uygulamasının nasıl görüneceğini gösteriyor
+    </div>
+    
+    <div class="container">
+        <div class="header">
+            <h1>🚀 CryptoArbitrage Pro</h1>
+            <p>Real-time arbitrage opportunities</p>
+            <div class="live-indicator">
+                <div class="live-dot"></div>
+                Live Data
+            </div>
+        </div>
+        
+        <div class="stats">
+            <div class="stat">
+                <div class="stat-number" id="totalOpps">4</div>
+                <div class="stat-label">Opportunities</div>
+            </div>
+            <div class="stat">
+                <div class="stat-number" id="avgProfit">3.26%</div>
+                <div class="stat-label">Avg Profit</div>
+            </div>
+            <div class="stat">
+                <div class="stat-number" id="maxProfit">7.98%</div>
+                <div class="stat-label">Max Profit</div>
+            </div>
+        </div>
+        
+        <div class="opportunities" id="opportunitiesList">
+            <div class="loading">Loading opportunities...</div>
+        </div>
+        
+        <button class="refresh-btn" onclick="refreshData()">🔄</button>
+    </div>
+
+    <script>
+        const mockOpportunities = [
+            {
+                symbol: "BTC/USDT",
+                exchange1: "binance",
+                exchange2: "kucoin",
+                price1: 43250.50,
+                price2: 43512.30,
+                profit: 0.61,
+                volume: 2500000,
+                risk: "low"
+            },
+            {
+                symbol: "ETH/USDT", 
+                exchange1: "gate",
+                exchange2: "okx",
+                price1: 2845.20,
+                price2: 2891.75,
+                profit: 1.64,
+                volume: 1850000,
+                risk: "low"
+            },
+            {
+                symbol: "SOL/USDT",
+                exchange1: "bybit", 
+                exchange2: "mexc",
+                price1: 98.45,
+                price2: 101.23,
+                profit: 2.82,
+                volume: 750000,
+                risk: "medium"
+            },
+            {
+                symbol: "DOGE/USDT",
+                exchange1: "lbank",
+                exchange2: "bitmart", 
+                price1: 0.08234,
+                price2: 0.08891,
+                profit: 7.98,
+                volume: 45000,
+                risk: "high"
+            }
+        ];
+
+        function formatVolume(volume) {
+            if (volume >= 1000000) {
+                return (volume / 1000000).toFixed(1) + 'M';
+            } else if (volume >= 1000) {
+                return (volume / 1000).toFixed(0) + 'K';
+            }
+            return volume.toString();
+        }
+
+        function renderOpportunities() {
+            const container = document.getElementById('opportunitiesList');
+            container.innerHTML = '';
+            
+            mockOpportunities.forEach((opp, index) => {
+                // Add some randomness to simulate live data
+                const profitVariation = (Math.random() - 0.5) * 0.2;
+                const liveProfit = Math.max(0.1, opp.profit + profitVariation);
+                
+                const card = document.createElement('div');
+                card.className = 'opportunity-card';
+                card.innerHTML = `
+                    <div class="opportunity-header">
+                        <div>
+                            <span style="color: #666; font-size: 14px;">#${index + 1}</span>
+                            <span class="symbol">${opp.symbol}</span>
+                        </div>
+                        <div class="profit">+${liveProfit.toFixed(2)}%</div>
+                    </div>
+                    
+                    <div class="exchanges">
+                        <div class="exchange">
+                            <div class="exchange-name">${opp.exchange1}</div>
+                            <div class="exchange-price">$${opp.price1.toLocaleString()}</div>
+                            <div style="color: #3b82f6; font-size: 10px;">BUY</div>
+                        </div>
+                        <div class="arrow">→</div>
+                        <div class="exchange">
+                            <div class="exchange-name">${opp.exchange2}</div>
+                            <div class="exchange-price">$${opp.price2.toLocaleString()}</div>
+                            <div style="color: #f59e0b; font-size: 10px;">SELL</div>
+                        </div>
+                    </div>
+                    
+                    <div class="risk-info">
+                        <span class="risk-badge risk-${opp.risk}">${opp.risk.toUpperCase()} RISK</span>
+                        <span class="volume">Vol: ${formatVolume(opp.volume)}</span>
+                    </div>
+                `;
+                container.appendChild(card);
+            });
+        }
+
+        function refreshData() {
+            document.getElementById('opportunitiesList').innerHTML = '<div class="loading">Refreshing...</div>';
+            
+            // Simulate API call delay
+            setTimeout(() => {
+                // Randomize the profits slightly
+                mockOpportunities.forEach(opp => {
+                    const variation = (Math.random() - 0.5) * 0.1;
+                    opp.profit = Math.max(0.1, opp.profit + variation);
+                });
+                
+                renderOpportunities();
+                
+                // Update stats
+                const avgProfit = mockOpportunities.reduce((sum, opp) => sum + opp.profit, 0) / mockOpportunities.length;
+                const maxProfit = Math.max(...mockOpportunities.map(opp => opp.profit));
+                
+                document.getElementById('avgProfit').textContent = avgProfit.toFixed(2) + '%';
+                document.getElementById('maxProfit').textContent = maxProfit.toFixed(2) + '%';
+            }, 800);
+        }
+
+        // Initial render
+        setTimeout(renderOpportunities, 1000);
+        
+        // Auto refresh every 30 seconds
+        setInterval(refreshData, 30000);
+    </script>
+</body>
+</html>
