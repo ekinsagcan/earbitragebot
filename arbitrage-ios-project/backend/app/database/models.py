@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Boolean, DateTime, Float, Text, BigInteger, Date
+THIS SHOULD BE A LINTER ERRORfrom sqlalchemy import Column, Integer, String, Boolean, DateTime, Float, Text, BigInteger, Date
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.sql import func
 from datetime import datetime, date

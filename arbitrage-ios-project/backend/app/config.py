@@ -14,10 +14,9 @@ class Settings(BaseSettings):
     algorithm: str = "HS256"
     access_token_expire_minutes: int = 30
     
-    # Gumroad
-    gumroad_product_id: str = os.getenv("GUMROAD_PRODUCT_ID", "")
-    gumroad_access_token: str = os.getenv("GUMROAD_ACCESS_TOKEN", "")
-    gumroad_link: str = os.getenv("GUMROAD_LINK", "https://gumroad.com/l/your-product")
+    # App Store IAP
+    app_store_shared_secret: str = os.getenv("APP_STORE_SHARED_SECRET", "")
+    app_store_bundle_id: str = os.getenv("APP_STORE_BUNDLE_ID", "com.yourcompany.arbitragebot")
     
     # API Settings
     api_v1_prefix: str = "/api/v1"
@@ -33,6 +32,9 @@ class Settings(BaseSettings):
     max_profit_threshold: float = 20.0  # 20% max profit for normal users
     admin_max_profit_threshold: float = 40.0  # 40% max profit for admins
     free_user_max_profit: float = 2.0  # 2% max profit for free users
+    
+    # Subscription Settings
+    premium_subscription_days: int = 30  # 30 days per subscription
     
     # Rate Limiting
     max_requests_per_minute: int = 60
