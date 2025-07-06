@@ -1344,4 +1344,383 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         bot.cursor.execute("SELECT COUNT(*) FROM arbitrage_data")
         total_arbitrage_records = bot.cursor.fetchone()[0]
 
-        # En aktif kullanıcılar (örn. son 24 saat) - herhangi bir etkile
+        # En aktif kullanıcılar (örn. son 24 saat) - herhangi bir etkileşim
+        bot.cursor.execute("""
+            SELECT username, last_activity
+            FROM users
+            WHERE last_activity > NOW() - INTERVAL '24 hours'
+            ORDER BY last_activity DESC
+            LIMIT 10
+        """)
+        recent_active_users = bot.cursor.fetchall()
+
+        # Arbitraj kontrollerine göre en aktif kullanıcılar (son 24 saat)
+        bot.cursor.execute("""
+            SELECT username, last_check_time
+            FROM users
+            WHERE last_check_time IS NOT NULL AND last_check_time > NOW() - INTERVAL '24 hours'
+            ORDER BY last_check_time DESC
+            LIMIT 10
+        """)
+        recent_check_users = bot.cursor.fetchall()
+
+        # Bağlı kuruluş istatistikleri özeti
+        bot.cursor.execute("""
+            SELECT
+                a.name,
+                a.link_code,
+                COUNT(DISTINCT u.user_id) AS total_referred_users,
+                COUNT(DISTINCT aa.user_id) AS total_premium_activations
+            FROM affiliates a
+            LEFT JOIN users u ON a.link_code = u.referred_by
+            LEFT JOIN affiliate_activations aa ON a.link_code = aa.affiliate_link_code
+            GROUP BY a.name, a.link_code
+            ORDER BY total_premium_activations DESC, total_referred_users DESC;
+        """)
+        affiliate_stats = bot.cursor.fetchall()
+
+        stats_message = (
+            f"📊 **Bot İstatistikleri** 📊\n\n"
+            f"👥 Toplam Kullanıcı: `{total_users}`\n"
+            f"💎 Aktif Premium Kullanıcı: `{active_premium_users}`\n"
+            f"⏳ Süresi Dolmuş Premium Kullanıcı: `{expired_premium_users}`\n"
+            f"🔄 Toplam Arbitraj Kaydı: `{total_arbitrage_records}`\n"
+            f"🌐 İzlenen Borsalar: `{len(bot.exchanges)}`\n"
+            f"💰 Güvenilen Semboller: `{len(bot.trusted_symbols)}`\n\n"
+        )
+
+        if recent_active_users:
+            stats_message += "🌟 **Son 24 Saatte En Aktif Kullanıcılar (Herhangi Bir Etkileşim)** 🌟\n"
+            for username, last_activity in recent_active_users:
+                stats_message += f"- @{username or 'N/A'} (Son etkinlik: {last_activity.strftime('%Y-%m-%d %H:%M')})\n"
+            stats_message += "\n"
+
+        if recent_check_users:
+            stats_message += "📈 **Son 24 Saatte Arbitraj Kontrollerinde En Aktif Kullanıcılar** 📈\n"
+            for username, last_check_time in recent_check_users:
+                stats_message += f"- @{username or 'N/A'} (Son kontrol: {last_check_time.strftime('%Y-%m-%d %H:%M')})\n"
+            stats_message += "\n"
+
+        if affiliate_stats:
+            stats_message += "🔗 **Bağlı Kuruluş Programı İstatistikleri** 🔗\n"
+            for name, link_code, referred_users, premium_activations in affiliate_stats:
+                stats_message += (
+                    f"**{name}** (`{link_code}`)\n"
+                    f"  - Yönlendirilen Kullanıcı: `{referred_users}`\n"
+                    f"  - Premium Aktivasyon: `{premium_activations}`\n"
+                )
+            stats_message += "\n"
+
+        await update.message.reply_text(stats_message, parse_mode='Markdown')
+
+    except Exception as e:
+        logger.error(f"Bot istatistikleri alınırken hata: {e}")
+        await update.message.reply_text("İstatistikler alınırken bir hata oluştu.")
+
+
+async def admin_check_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = update.effective_user.id
+    if str(user_id) != ADMIN_USER_ID:
+        await update.message.reply_text("Bu komutu kullanmaya yetkiniz yok.")
+        return
+
+    await context.bot.send_message(chat_id=user_id, text="Yönetici modunda arbitraj fırsatları aranıyor (daha yüksek kar eşiği ile)...")
+
+    # Bu özel bir sadece yönetici kontrolüdür.
+    # Daha yüksek bir kar eşiği kullanacağız ve varsa Huobi gibi belirli sorunlu borsaları hariç tutacağız.
+    is_admin = True
+    profit_threshold_filter = 0.1 # Yöneticiler her zaman tüm geçerli olanları görür, düşük karlıları bile
+    max_opportunities = 20 # Yöneticiler daha fazlasını görebilir
+    
+    if time.time() - bot.last_fetched_time > 30: # Veri 30 saniyeden eskiyse
+        await context.bot.send_message(chat_id=user_id, text="Piyasa verileri güncelleniyor, bu biraz zaman alabilir.")
+        await bot.fetch_all_tickers()
+
+    with bot.data_lock:
+        current_ticker_data = bot.ticker_data
+        current_volume_data = bot.volume_data
+
+    if not current_ticker_data:
+        await context.bot.send_message(chat_id=user_id, text="Şu anda piyasa verisi mevcut değil. Lütfen daha sonra tekrar deneyin.")
+        return
+
+    opportunities_found = []
+    common_symbols = set()
+    for exchange_tickers in current_ticker_data.values():
+        common_symbols.update(exchange_tickers.keys())
+
+    for symbol in common_symbols:
+        buy_exchange, buy_price = None, float('inf')
+        sell_exchange, sell_price = None, 0.0
+        buy_volume, sell_volume = 0.0, 0.0
+
+        for exchange, tickers in current_ticker_data.items():
+            if symbol in tickers and exchange != 'huobi': # Bu yönetici kontrolü için Huobi'yi hariç tut
+                price = tickers[symbol]
+                volume = current_volume_data.get(exchange, {}).get(symbol, 0.0)
+
+                if price < buy_price:
+                    buy_price = price
+                    buy_exchange = exchange
+                    buy_volume = volume
+
+                if price > sell_price:
+                    sell_price = price
+                    sell_exchange = exchange
+                    sell_volume = volume
+
+        if buy_exchange and sell_exchange and buy_exchange != sell_exchange and buy_price > 0:
+            profit_percentage = ((sell_price - buy_price) / buy_price) * 100
+
+            volume_usd = min(buy_volume, sell_volume)
+
+            is_valid, reason = bot._validate_arbitrage_opportunity(
+                symbol, buy_price, sell_price, buy_exchange, sell_exchange, volume_usd, is_admin_check=is_admin
+            )
+
+            if is_valid and profit_percentage >= profit_threshold_filter:
+                opportunities_found.append({
+                    "symbol": symbol,
+                    "buy_exchange": buy_exchange,
+                    "buy_price": buy_price,
+                    "sell_exchange": sell_exchange,
+                    "sell_price": sell_price,
+                    "profit_percentage": profit_percentage,
+                    "volume_usd": volume_usd
+                })
+                # Yönetici kontrolü için veritabanına kaydetmeye gerek yok, teşhis aracı olduğu için
+            elif not is_valid:
+                logger.info(f"Yönetici kontrolü: {symbol} ({buy_exchange}-{sell_exchange}) filtrelendi - Neden: {reason}")
+
+
+    opportunities_found.sort(key=lambda x: x['profit_percentage'], reverse=True)
+
+    if not opportunities_found:
+        await context.bot.send_message(chat_id=user_id, text="Üzgünüz, yönetici kontrolünde önemli arbitraj fırsatı bulunamadı (Huobi hariç).")
+    else:
+        message = "🚨 **Yönetici Arbitraj Fırsatları (Yüksek Eşik)** 🚨\n\n"
+        for i, opp in enumerate(opportunities_found[:max_opportunities]):
+            message += (
+                f"**{opp['symbol']}**\n"
+                f"📈 Kar: `{opp['profit_percentage']:.2f}%`\n"
+                f"🟢 Alış: `{opp['buy_price']:.8f}` ({opp['buy_exchange'].upper()})\n"
+                f"🔴 Satış: `{opp['sell_price']:.8f}` ({opp['sell_exchange'].upper()})\n"
+                f"💰 24s Hacim: `${opp['volume_usd']:.0f}`\n"
+                f"------------------------------------\n"
+            )
+        message += "\n*Bu fırsatlar, yönetici panelinden daha yüksek bir kar eşiği ve Huobi hariç tutularak listelenmiştir."
+        await context.bot.send_message(chat_id=user_id, text=message, parse_mode='Markdown')
+
+# --- Bağlı Kuruluş Yönetimi ---
+async def generate_affiliate_link_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.effective_user.id != int(ADMIN_USER_ID):
+        await update.message.reply_text("Bu komutu kullanmaya yetkiniz yok.")
+        return
+
+    # Komut doğrudan çağrıldıysa
+    if update.message.text.startswith('/generate_affiliate_link'):
+        if not context.args or len(context.args) < 1:
+            await update.message.reply_text("Kullanım: `/generate_affiliate_link <influencer_adı> [özel_kod]`\n"
+                                            "Örnek: `/generate_affiliate_link JohnDoe`\n"
+                                            "Örnek: `/generate_affiliate_link JaneSmith jane_promo`")
+            return
+        influencer_name = context.args[0]
+        custom_code = context.args[1] if len(context.args) > 1 else None
+    # Beklenen bir mesajdan çağrıldıysa
+    elif context.user_data.get('admin_action') == 'generate_affiliate_link_prompt':
+        message_parts = update.message.text.split(maxsplit=1)
+        if not message_parts:
+            await update.message.reply_text("Geçersiz giriş. Lütfen influencer'ın adını ve isteğe bağlı olarak özel bir kod belirtin.")
+            context.user_data.pop('admin_action', None)
+            return
+        influencer_name = message_parts[0]
+        custom_code = message_parts[1] if len(message_parts) > 1 else None
+        context.user_data.pop('admin_action', None) # Durumu temizle
+    else:
+        await update.message.reply_text("Geçersiz kullanım veya yönetici eylemi beklenmiyor.")
+        return
+
+    if custom_code:
+        link_code = custom_code.lower().replace(" ", "_")
+    else:
+        link_code = f"{influencer_name.lower().replace(' ', '_')}_{str(uuid4())[:8]}" # Eşsiz kod oluştur
+
+    try:
+        # link_code'un eşsiz olduğundan emin ol
+        bot.cursor.execute("SELECT 1 FROM affiliates WHERE link_code = %s", (link_code,))
+        if bot.cursor.fetchone():
+            await update.message.reply_text(f"Bağlı kuruluş bağlantı kodu `{link_code}` zaten mevcut. Lütfen farklı bir özel kod deneyin veya yeniden oluşturun.")
+            return
+
+        bot.cursor.execute(
+            "INSERT INTO affiliates (name, link_code) VALUES (%s, %s) RETURNING affiliate_id",
+            (influencer_name, link_code)
+        )
+        affiliate_id = bot.cursor.fetchone()[0]
+        bot.conn.commit()
+
+        bot.affiliates[link_code] = {"name": influencer_name, "affiliate_id": affiliate_id}
+
+        affiliate_link = f"https://t.me/{context.bot.username}?start=aff_{link_code}"
+        await update.message.reply_text(
+            f"**{influencer_name}** için bağlı kuruluş linki oluşturuldu:\n"
+            f"Kod: `{link_code}`\n"
+            f"Link: `{affiliate_link}`",
+            parse_mode='Markdown'
+        )
+        logger.info(f"{influencer_name} için bağlı kuruluş linki oluşturuldu, kod: {link_code}")
+
+    except Exception as e:
+        logger.error(f"Bağlı kuruluş linki oluşturulurken hata: {e}")
+        await update.message.reply_text("Bağlı kuruluş linki oluşturulurken bir hata oluştu.")
+
+async def list_affiliates_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.effective_user.id != int(ADMIN_USER_ID):
+        await update.message.reply_text("Bu komutu kullanmaya yetkiniz yok.")
+        return
+
+    try:
+        bot.cursor.execute("SELECT name, link_code, created_at FROM affiliates ORDER BY created_at DESC")
+        affiliates_list = bot.cursor.fetchall()
+
+        if not affiliates_list:
+            await update.message.reply_text("Bağlı kuruluş linki bulunamadı.")
+            return
+
+        message_text = "🔗 **Mevcut Bağlı Kuruluş Linkleri** 🔗\n\n"
+        for name, link_code, created_at in affiliates_list:
+            message_text += (
+                f"**{name}** (`{link_code}`)\n"
+                f"  - Oluşturulma Tarihi: {created_at.strftime('%Y-%m-%d %H:%M')}\n"
+                f"  - Link: `https://t.me/{context.bot.username}?start=aff_{link_code}`\n\n"
+            )
+        await update.message.reply_text(message_text, parse_mode='Markdown')
+
+    except Exception as e:
+        logger.error(f"Bağlı kuruluşlar listelenirken hata: {e}")
+        await update.message.reply_text("Bağlı kuruluş linkleri listelenirken bir hata oluştu.")
+
+# --- Genel Mesaj ve Callback İşleyicileri ---
+async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    await query.answer()
+
+    if query.data == "check_arbitrage":
+        await find_arbitrage_opportunities(update, context)
+    elif query.data == "trusted_coins":
+        await send_trusted_coins_list(update, context)
+    elif query.data == "premium_info":
+        await send_premium_info(update, context)
+    elif query.data == "activate_license":
+        await query.edit_message_text("Lütfen premium üyeliği etkinleştirmek için Gumroad lisans anahtarınızı yanıtlayın.")
+        context.user_data['awaiting_license'] = True
+    elif query.data == "help":
+        await send_help_info(update, context)
+    elif query.data == "admin_panel":
+        await admin_panel_callback(update, context)
+    elif query.data == "admin_add_premium":
+        await query.edit_message_text("Lütfen kullanıcının kimliğini veya kullanıcı adını (örn. `123456789` veya `kullanici_adim`) ve isteğe bağlı olarak gün sayısını (örn. `30`) yanıtlayın.\nÖrnek: `123456789 30` veya `kullanici_adim`")
+        context.user_data['admin_action'] = 'add_premium'
+    elif query.data == "admin_remove_premium":
+        await query.edit_message_text("Lütfen kullanıcının kimliğini veya kullanıcı adını (örn. `123456789` veya `kullanici_adim`) yanıtlayın.")
+        context.user_data['admin_action'] = 'remove_premium'
+    elif query.data == "admin_list_premium":
+        await list_premium_command(update, context)
+    elif query.data == "admin_view_stats":
+        await stats_command(update, context)
+    elif query.data == "admin_broadcast_prompt": # Yeni
+        await admin_broadcast_message_prompt(update, context)
+    elif query.data in ["broadcast_all", "broadcast_free", "broadcast_premium", "broadcast_specific"]: # Yeni
+        await handle_broadcast_callback(update, context)
+    elif query.data == "admin_generate_affiliate_link": # Yeni
+        await query.edit_message_text("Lütfen influencer'ın adını ve isteğe bağlı olarak özel bir kod yanıtlayın.\nKullanım: `JohnDoe` veya `JaneSmith jane_promo`")
+        context.user_data['admin_action'] = 'generate_affiliate_link_prompt' # Mesaj bekle
+    elif query.data == "admin_list_affiliates": # Yeni
+        await list_affiliates_command(update, context)
+    elif query.data == "back_to_main_menu":
+        await start_command(update, context) # Veya özel bir ana menü fonksiyonu
+    else:
+        await query.edit_message_text("Bilinmeyen komut.")
+
+# Yönetici metin girdisi için yeni işleyici, belirli bir komut tarafından yakalanmayanlar için
+async def handle_admin_state_messages(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.effective_user.id != int(ADMIN_USER_ID):
+        return # Filtre nedeniyle olmamalı, ancak güvenlik için iyi
+
+    # Bir yayın mesajı beklenip beklenmediğini kontrol et
+    if context.user_data.get('broadcast_audience'):
+        await handle_admin_broadcast_message(update, context)
+    # Başka bir yönetici eylemi beklenip beklenmediğini kontrol et
+    elif context.user_data.get('admin_action') == 'add_premium':
+        # Girişi işlemek için komut işleyiciyi yeniden çağır
+        # Bu fonksiyonların doğru ayrıştırması için context.args'ı mesaj metninden ayarlamamız gerekiyor
+        context.args = update.message.text.split()
+        await add_premium_command(update, context)
+    elif context.user_data.get('admin_action') == 'remove_premium':
+        # Komut işleyiciyi yeniden çağır
+        context.args = update.message.text.split()
+        await remove_premium_command(update, context)
+    elif context.user_data.get('admin_action') == 'generate_affiliate_link_prompt':
+        # Komut işleyiciyi yeniden çağır
+        context.args = update.message.text.split()
+        await generate_affiliate_link_command(update, context)
+    else:
+        logger.debug(f"Yönetici {update.effective_user.id} durum-mesaj işleyicisinde işlenmeyen metin gönderdi: {update.message.text}")
+
+
+def main() -> None:
+    """Botu başlat."""
+    TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+    if not TELEGRAM_BOT_TOKEN:
+        logger.error("TELEGRAM_BOT_TOKEN ortam değişkeni ayarlanmamış.")
+        return
+
+    application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
+
+    # Komut işleyicileri
+    application.add_handler(CommandHandler("start", start_command))
+    application.add_handler(CommandHandler("admin", admin_panel_callback))
+    application.add_handler(CommandHandler("addpremium", add_premium_command))
+    application.add_handler(CommandHandler("removepremium", remove_premium_command))
+    application.add_handler(CommandHandler("listpremium", list_premium_command))
+    application.add_handler(CommandHandler("stats", stats_command))
+    application.add_handler(CommandHandler("admincheck", admin_check_command))
+    application.add_handler(CommandHandler("price", price_check_command)) # Yeni komut handler'ı
+    application.add_handler(CommandHandler("generate_affiliate_link", generate_affiliate_link_command)) # Yeni komut
+    application.add_handler(CommandHandler("list_affiliates", list_affiliates_command)) # Yeni komut
+    application.add_handler(CommandHandler("broadcast", admin_broadcast_message_prompt)) # Yeni komut
+
+    # Mesaj işleyicileri (sıra önemlidir: daha spesifik işleyiciler önce)
+    # Bu işleyici, YÖNETİCİ'den gelen komut OLMAYAN tüm metin mesajlarını yakalayacak
+    # ve context.user_data durumuna göre onları yönlendirecektir.
+    # Bu, sorunlu filters.ContextUpdate kullanımının yerini alır.
+    application.add_handler(MessageHandler(
+        filters.TEXT & filters.User(int(ADMIN_USER_ID)) & ~filters.COMMAND,
+        handle_admin_state_messages
+    ))
+
+    # Bu işleyici, diğer tüm metin mesajlarını (komut olmayan, yönetici olmayan) yakalayacak
+    # handle_license_activation fonksiyonu kendi içinde context.user_data['awaiting_license']'ı kontrol eder
+    application.add_handler(MessageHandler(
+        filters.TEXT & ~filters.COMMAND,
+        handle_license_activation
+    ))
+    
+    # Callback işleyicileri
+    application.add_handler(CallbackQueryHandler(button_handler))
+
+    async def cleanup():
+        if bot.session and not bot.session.closed:
+            await bot.session.close()
+        if bot.conn and not bot.conn.closed:
+            bot.conn.close()
+            logger.info("PostgreSQL veritabanı bağlantısı kapatıldı.")
+
+    application.post_stop = cleanup
+
+    application.run_polling()
+    logger.info("Gelişmiş Arbitraj Botu başarıyla başlatıldı.")
+
+
+if __name__ == '__main__':
+    main()
