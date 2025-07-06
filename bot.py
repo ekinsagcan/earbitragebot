@@ -285,71 +285,106 @@ class ArbitrageBot:
         conn = self.get_db_connection()
         try:
             with conn.cursor() as cursor:
-                cursor.execute('''
-                    CREATE TABLE IF NOT EXISTS users (
-                        user_id BIGINT PRIMARY KEY, -- Use BIGINT for user_id
-                        username TEXT,
-                        subscription_end DATE,
-                        is_premium BOOLEAN DEFAULT FALSE,
-                        added_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                    )
-                ''')
-                cursor.execute('''
-                    CREATE TABLE IF NOT EXISTS arbitrage_data (
-                        id SERIAL PRIMARY KEY, -- SERIAL for auto-incrementing ID
-                        symbol TEXT,
-                        exchange1 TEXT,
-                        exchange2 TEXT,
-                        price1 REAL,
-                        price2 REAL,
-                        profit_percent REAL,
-                        volume_24h REAL,
-                        timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                    )
-                ''')
-                cursor.execute('''
-                    CREATE TABLE IF NOT EXISTS premium_users (
-                        user_id BIGINT PRIMARY KEY,
-                        username TEXT,
-                        added_by_admin BOOLEAN DEFAULT TRUE,
-                        added_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                        subscription_end DATE
-                    )
-                ''')
-                cursor.execute('''
-                    CREATE TABLE IF NOT EXISTS license_keys (
-                         license_key TEXT PRIMARY KEY,
-                         user_id BIGINT,
-                         username TEXT,
-                         used_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                         gumroad_sale_id TEXT
-                    )
-                ''')
-                cursor.execute('''
-                    CREATE TABLE IF NOT EXISTS affiliates (
-                        affiliate_code TEXT PRIMARY KEY,
-                        influencer_id BIGINT,
-                        influencer_name TEXT,
-                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                        uses INT DEFAULT 0
-                    )
-                ''')
-                cursor.execute('''
-                    CREATE TABLE IF NOT EXISTS affiliate_users (
-                        user_id BIGINT,
-                        affiliate_code TEXT,
-                        joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                        PRIMARY KEY (user_id, affiliate_code)
-                    )
-                ''')
-            conn.commit()
-            logger.info("PostgreSQL tables initialized or already exist.")
+                # Her tablo için ayrı try-except bloğu
+                try:
+                    cursor.execute('''
+                        CREATE TABLE IF NOT EXISTS users (
+                            user_id BIGINT PRIMARY KEY,
+                            username TEXT,
+                            subscription_end DATE,
+                            is_premium BOOLEAN DEFAULT FALSE,
+                            added_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                        )
+                    ''')
+                    conn.commit()
+                except Exception as e:
+                    logger.error(f"Error creating users table: {e}")
+                    conn.rollback()
+
+                try:
+                    cursor.execute('''
+                        CREATE TABLE IF NOT EXISTS arbitrage_data (
+                            id SERIAL PRIMARY KEY,
+                            symbol TEXT,
+                            exchange1 TEXT,
+                            exchange2 TEXT,
+                            price1 REAL,
+                            price2 REAL,
+                            profit_percent REAL,
+                            volume_24h REAL,
+                            timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                        )
+                    ''')
+                    conn.commit()
+                except Exception as e:
+                    logger.error(f"Error creating arbitrage_data table: {e}")
+                    conn.rollback()
+
+                try:
+                    cursor.execute('''
+                        CREATE TABLE IF NOT EXISTS premium_users (
+                            user_id BIGINT PRIMARY KEY,
+                            username TEXT,
+                            added_by_admin BOOLEAN DEFAULT TRUE,
+                            added_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                            subscription_end DATE
+                        )
+                    ''')
+                    conn.commit()
+                except Exception as e:
+                    logger.error(f"Error creating premium_users table: {e}")
+                    conn.rollback()
+
+                try:
+                    cursor.execute('''
+                        CREATE TABLE IF NOT EXISTS license_keys (
+                            license_key TEXT PRIMARY KEY,
+                            user_id BIGINT,
+                            username TEXT,
+                            used_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                           gumroad_sale_id TEXT
+                        )
+                    ''')
+                    conn.commit()
+                except Exception as e:
+                    logger.error(f"Error creating license_keys table: {e}")
+                    conn.rollback()
+
+                try:
+                    cursor.execute('''
+                        CREATE TABLE IF NOT EXISTS affiliates (
+                            affiliate_code TEXT PRIMARY KEY,
+                            influencer_id BIGINT,
+                            influencer_name TEXT,
+                            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                            uses INT DEFAULT 0
+                        )
+                    ''')
+                    conn.commit()
+                except Exception as e:
+                    logger.error(f"Error creating affiliates table: {e}")
+                    conn.rollback()
+
+                try:
+                    cursor.execute('''
+                        CREATE TABLE IF NOT EXISTS affiliate_users (
+                            user_id BIGINT,
+                            affiliate_code TEXT,
+                            joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                            PRIMARY KEY (user_id, affiliate_code)
+                        )
+                    ''')
+                    conn.commit()
+                except Exception as e:
+                    logger.error(f"Error creating affiliate_users table: {e}")
+                    conn.rollback()
+
         except Exception as e:
-            logger.error(f"Error initializing database: {e}")
-            conn.rollback() # Rollback in case of error
+            logger.error(f"General database initialization error: {e}")
+            conn.rollback()
         finally:
-            # No need to close connection here, get_db_connection handles it
-            pass
+            if conn:
+                conn.close()
 
     async def cache_refresh_task(self):
         """Her 25 saniyede bir cache'i yenile"""
