@@ -1635,7 +1635,20 @@ async def show_admin_panel(query):
     keyboard = [
         [InlineKeyboardButton("📋 List Premium Users", callback_data='list_premium')],
         [InlineKeyboardButton("📩 Send Message to Users", callback_data='send_message')],
+        [InlineKeyboardButton("👥 Affiliate Management", callback_data='affiliate_mgmt')],  # Yeni buton
         [InlineKeyboardButton("🔙 Main Menu", callback_data='back')]
+    ]
+    
+    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+
+async def show_affiliate_management(query):
+    text = "👥 **Affiliate Management**\n\n"
+    text += "Manage your affiliate program and track referrals"
+    
+    keyboard = [
+        [InlineKeyboardButton("➕ Create Affiliate Link", callback_data='create_affiliate')],
+        [InlineKeyboardButton("📊 Affiliate Stats", callback_data='affiliate_stats')],
+        [InlineKeyboardButton("🔙 Admin Panel", callback_data='admin')]
     ]
     
     await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
