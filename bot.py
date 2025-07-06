@@ -139,6 +139,10 @@ class ArbitrageBot:
                     expiry_date TIMESTAMP
                 );
             """)
+            # Ensure premium_users has expiry_date if it already existed without it
+            self.cursor.execute("""
+                ALTER TABLE premium_users ADD COLUMN IF NOT EXISTS expiry_date TIMESTAMP;
+            """)
             self.cursor.execute("""
                 CREATE TABLE IF NOT EXISTS license_keys (
                     license_key VARCHAR(255) PRIMARY KEY,
@@ -980,9 +984,14 @@ async def handle_license_activation(update: Update, context: ContextTypes.DEFAUL
     user_id = update.effective_user.id
     username = update.effective_user.username or f"user_{user_id}"
 
+    # Only process if awaiting license from a *non-admin* user or specifically for license activation
+    # Admins' text messages are handled by handle_admin_text_input
+    if user_id != int(ADMIN_USER_ID) and not context.user_data.get('awaiting_license'):
+        return # Not a license key submission from non-admin
+
     if context.user_data.get('awaiting_license'):
         license_key = update.message.text.strip()
-        context.user_data['awaiting_license'] = False # Reset state
+        context.user_data.pop('awaiting_license', None) # Reset state
 
         if license_key in bot.used_license_keys:
             await update.message.reply_text("Bu lisans anahtarı daha önce kullanılmış. Lütfen farklı bir anahtar deneyin veya destek ile iletişime geçin.")
@@ -1017,9 +1026,6 @@ async def handle_license_activation(update: Update, context: ContextTypes.DEFAUL
         except Exception as e:
             logger.error(f"Gumroad API error: {e}")
             await update.message.reply_text("Lisans doğrulama sırasında bir hata oluştu. Lütfen daha sonra tekrar deneyin.")
-    else:
-        # If not awaiting license, just ignore or pass to other handlers
-        pass
 
 async def price_check_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
@@ -1107,16 +1113,20 @@ async def add_premium_command(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     # If called from message handler, context.args might be empty or combined.
     # We expect `user_id_or_username [days]`
-    if context.user_data.get('admin_action') == 'add_premium':
-        message_parts = update.message.text.split()
-        target_str = message_parts[0]
-        days_str = message_parts[1] if len(message_parts) > 1 else '30' # Default 30 days
-        context.user_data.pop('admin_action', None) # Clear state
-    elif context.args and len(context.args) > 0:
+    message_text_parts = update.message.text.split(maxsplit=2) # Split up to 2 times
+    if message_text_parts[0].startswith('/addpremium'): # If called as a direct command
+        if len(context.args) == 0:
+            await update.message.reply_text("Kullanım: `/addpremium <kullanıcı_id_veya_kullanıcı_adı> [gün]`\nÖrn: `/addpremium 123456789 30` veya `/addpremium my_user`")
+            return
         target_str = context.args[0]
-        days_str = context.args[1] if len(context.args) > 1 else '30'
+        days_str = context.args[1] if len(context.args) > 1 else '30' # Default 30 days
+    elif context.user_data.get('admin_action') == 'add_premium': # If called from an awaited message
+        target_str = message_text_parts[0]
+        days_str = message_text_parts[1] if len(message_text_parts) > 1 else '30'
+        context.user_data.pop('admin_action', None) # Clear state
     else:
-        await update.message.reply_text("Kullanım: `/addpremium <kullanıcı_id_veya_kullanıcı_adı> [gün]`\nÖrn: `/addpremium 123456789 30` veya `/addpremium my_user`")
+        # Should not happen if handlers are set up correctly, but as a fallback
+        await update.message.reply_text("Geçersiz kullanım veya admin eylemi beklentisi yok.")
         return
 
     target_id = get_user_id_from_input(target_str)
@@ -1150,13 +1160,17 @@ async def remove_premium_command(update: Update, context: ContextTypes.DEFAULT_T
         return
 
     # If called from message handler, context.args might be empty or combined.
-    if context.user_data.get('admin_action') == 'remove_premium':
-        target_str = update.message.text.strip()
-        context.user_data.pop('admin_action', None) # Clear state
-    elif context.args and len(context.args) > 0:
+    message_text_parts = update.message.text.split(maxsplit=1)
+    if message_text_parts[0].startswith('/removepremium'): # If called as a direct command
+        if len(context.args) == 0:
+            await update.message.reply_text("Kullanım: `/removepremium <kullanıcı_id_veya_kullanıcı_adı>`\nÖrn: `/removepremium 123456789` veya `/removepremium my_user`")
+            return
         target_str = context.args[0]
+    elif context.user_data.get('admin_action') == 'remove_premium': # If called from an awaited message
+        target_str = message_text_parts[0].strip()
+        context.user_data.pop('admin_action', None) # Clear state
     else:
-        await update.message.reply_text("Kullanım: `/removepremium <kullanıcı_id_veya_kullanıcı_adı>`\nÖrn: `/removepremium 123456789` veya `/removepremium my_user`")
+        await update.message.reply_text("Geçersiz kullanım veya admin eylemi beklentisi yok.")
         return
 
     target_id = get_user_id_from_input(target_str)
@@ -1186,10 +1200,10 @@ async def list_premium_command(update: Update, context: ContextTypes.DEFAULT_TYP
 
         message_text = "💎 **Premium Kullanıcılar** 💎\n\n"
         for user_id, username, expiry_date in premium_users:
-            status = "Aktif" if expiry_date > datetime.now() else "Süresi Doldu"
+            status = "Aktif" if expiry_date and expiry_date > datetime.now() else "Süresi Doldu"
             message_text += (
                 f"- @{username or 'N/A'} (ID: `{user_id}`)\n"
-                f"  Durum: {status} - Sona Erme: {expiry_date.strftime('%d.%m.%Y %H:%M')}\n\n"
+                f"  Durum: {status} - Sona Erme: {expiry_date.strftime('%d.%m.%Y %H:%M') if expiry_date else 'N/A'}\n\n"
             )
         await context.bot.send_message(chat_id=update.effective_chat.id, text=message_text, parse_mode='Markdown')
 
@@ -1199,8 +1213,13 @@ async def list_premium_command(update: Update, context: ContextTypes.DEFAULT_TYP
 
 # --- Admin Broadcast Messaging ---
 async def admin_broadcast_message_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    # This handler can be called directly by /broadcast command, or from a callback
     if update.effective_user.id != int(ADMIN_USER_ID):
-        await update.message.reply_text("Bu komutu kullanmaya yetkiniz yok.")
+        if update.callback_query:
+            await update.callback_query.answer("Bu komutu kullanmaya yetkiniz yok.")
+            await update.callback_query.edit_message_text("Bu komutu kullanmaya yetkiniz yok.")
+        else:
+            await update.message.reply_text("Bu komutu kullanmaya yetkiniz yok.")
         return
 
     keyboard = [
@@ -1210,7 +1229,12 @@ async def admin_broadcast_message_prompt(update: Update, context: ContextTypes.D
         [InlineKeyboardButton("Belirli Bir Kullanıcı (kullanıcı adı ile)", callback_data="broadcast_specific")],
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text("Yayın için hedef kitleyi seçin:", reply_markup=reply_markup)
+
+    if update.callback_query:
+        await update.callback_query.edit_message_text("Yayın için hedef kitleyi seçin:", reply_markup=reply_markup)
+    else:
+        await update.message.reply_text("Yayın için hedef kitleyi seçin:", reply_markup=reply_markup)
+
 
 async def handle_broadcast_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
@@ -1229,15 +1253,12 @@ async def handle_broadcast_callback(update: Update, context: ContextTypes.DEFAUL
         await query.edit_message_text(f"Lütfen {audience_type} kullanıcılara göndermek istediğiniz mesajı yazın.")
 
 async def handle_admin_broadcast_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if update.effective_user.id != int(ADMIN_USER_ID):
-        return # Ignore messages from non-admins
-
+    # This function is called by handle_admin_text_input, which already checks admin user
     audience_type = context.user_data.get('broadcast_audience')
     message_text = update.message.text
 
     if not audience_type:
-        # This message is not part of a broadcast flow initiated by admin_broadcast_message_prompt
-        return
+        return # Not a broadcast message
 
     sent_count = 0
     failed_count = 0
@@ -1383,7 +1404,7 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                 stats_message += (
                     f"**{name}** (`{link_code}`)\n"
                     f"  - Yönlendirilen Kullanıcı: `{referred_users}`\n"
-                    f"  - Premium Aktivasyonları: `{premium_activations}`\n"
+                    f"  - Premium Aktivasyonları: `{premium_activasyonlari}`\n"
                 )
             stats_message += "\n"
 
@@ -1459,7 +1480,7 @@ async def admin_check_command(update: Update, context: ContextTypes.DEFAULT_TYPE
                     "symbol": symbol,
                     "buy_exchange": buy_exchange,
                     "buy_price": buy_price,
-                    "sell_exchange": sell_exchange,
+                    "sell_exchange": sell_price,
                     "sell_price": sell_price,
                     "profit_percentage": profit_percentage,
                     "volume_usd": volume_usd
@@ -1493,14 +1514,28 @@ async def generate_affiliate_link_command(update: Update, context: ContextTypes.
         await update.message.reply_text("Bu komutu kullanmaya yetkiniz yok.")
         return
 
-    if not context.args or len(context.args) < 1:
-        await update.message.reply_text("Kullanım: `/generate_affiliate_link <influencer_adı> [özel_kod]`\n"
-                                        "Örnek: `/generate_affiliate_link AyşeYılmaz`\n"
-                                        "Örnek: `/generate_affiliate_link CanDemir can_promo`")
+    # If called directly by command
+    if update.message.text.startswith('/generate_affiliate_link'):
+        if not context.args or len(context.args) < 1:
+            await update.message.reply_text("Kullanım: `/generate_affiliate_link <influencer_adı> [özel_kod]`\n"
+                                            "Örnek: `/generate_affiliate_link AyşeYılmaz`\n"
+                                            "Örnek: `/generate_affiliate_link CanDemir can_promo`")
+            return
+        influencer_name = context.args[0]
+        custom_code = context.args[1] if len(context.args) > 1 else None
+    # If called from an awaited message
+    elif context.user_data.get('admin_action') == 'generate_affiliate_link_prompt':
+        message_parts = update.message.text.split(maxsplit=1)
+        if not message_parts:
+            await update.message.reply_text("Geçersiz giriş. Lütfen influencer'ın adını ve isteğe bağlı bir özel kodu sağlayın.")
+            context.user_data.pop('admin_action', None)
+            return
+        influencer_name = message_parts[0]
+        custom_code = message_parts[1] if len(message_parts) > 1 else None
+        context.user_data.pop('admin_action', None) # Clear the state
+    else:
+        await update.message.reply_text("Geçersiz kullanım veya admin eylemi beklentisi yok.")
         return
-
-    influencer_name = context.args[0]
-    custom_code = context.args[1] if len(context.args) > 1 else None
 
     if custom_code:
         link_code = custom_code.lower().replace(" ", "_")
@@ -1604,24 +1639,26 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     else:
         await query.edit_message_text("Bilinmeyen komut.")
 
-async def handle_admin_actions(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+# New handler for all admin text input not caught by a specific command
+async def handle_admin_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.effective_user.id != int(ADMIN_USER_ID):
-        return # Ignore messages from non-admins
+        return # Not an admin message
 
-    action = context.user_data.get('admin_action')
-    message_text = update.message.text
-
-    if action == 'add_premium':
+    # Check if a broadcast message is expected
+    if context.user_data.get('broadcast_audience'):
+        await handle_admin_broadcast_message(update, context)
+    # Check if another admin action is expected
+    elif context.user_data.get('admin_action') == 'add_premium':
         await add_premium_command(update, context)
-    elif action == 'remove_premium':
+    elif context.user_data.get('admin_action') == 'remove_premium':
         await remove_premium_command(update, context)
-    elif action == 'generate_affiliate_link_prompt': # New
-        context.args = message_text.split() # Simulate args for generate_affiliate_link_command
+    elif context.user_data.get('admin_action') == 'generate_affiliate_link_prompt':
         await generate_affiliate_link_command(update, context)
-        context.user_data.pop('admin_action', None) # Clear the state
     else:
-        # This message is not part of a known admin action flow
-        pass
+        # This is an admin text message not associated with an ongoing state.
+        # Could log it or send a "command not recognized" message if needed.
+        logger.debug(f"Admin {update.effective_user.id} sent unhandled text: {update.message.text}")
+
 
 def main() -> None:
     """Start the bot."""
@@ -1645,20 +1682,17 @@ def main() -> None:
     application.add_handler(CommandHandler("list_affiliates", list_affiliates_command)) # New command
     application.add_handler(CommandHandler("broadcast", admin_broadcast_message_prompt)) # New command
 
-    # Message handlers (order matters: specific flows first, then general)
+    # Message handlers (order matters: more specific handlers first)
+    # 1. Admin text messages (including those awaiting input for actions/broadcasts)
     application.add_handler(MessageHandler(
-        filters.TEXT & filters.User(int(ADMIN_USER_ID)) & filters.ContextUpdate(
-            lambda context: context.user_data.get('broadcast_audience') in ["all", "free", "premium", "specific"]
-        ),
-        handle_admin_broadcast_message
-    )) # New: Handle broadcast messages
+        filters.TEXT & filters.User(int(ADMIN_USER_ID)) & ~filters.COMMAND,
+        handle_admin_text_input
+    ))
+    # 2. General user text messages (e.g., license activation)
     application.add_handler(MessageHandler(
-        filters.TEXT & filters.User(int(ADMIN_USER_ID)) & filters.ContextUpdate(
-            lambda context: context.user_data.get('admin_action') in ['add_premium', 'remove_premium', 'generate_affiliate_link_prompt']
-        ),
-        handle_admin_actions
-    )) # Existing: Handle general admin replies
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_license_activation)) # Existing: General message handler for license activation
+        filters.TEXT & ~filters.COMMAND,
+        handle_license_activation
+    ))
 
     # Callback handlers
     application.add_handler(CallbackQueryHandler(button_handler))
