@@ -119,9 +119,9 @@ class ArbitrageBot:
 
         self.conn = None
         self.init_database()
-        self.load_premium_users()
-        self.load_used_license_keys()
-        self.load_affiliates()
+        self._load_premium_users()
+        self._load_used_license_keys()
+        self._load_affiliates()
 
         # Cache system
         self.cache_data = {}
@@ -189,8 +189,7 @@ class ArbitrageBot:
                         is_premium BOOLEAN DEFAULT FALSE,
                         added_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                         last_active TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                        affiliate_id TEXT,
-                        FOREIGN KEY (affiliate_id) REFERENCES affiliates(affiliate_id)
+                        affiliate_id TEXT
                     )
                 ''')
                 cursor.execute('''
@@ -261,7 +260,33 @@ class ArbitrageBot:
             logger.error(f"Error initializing database: {e}")
             conn.rollback()
 
-    def load_affiliates(self):
+    def _load_premium_users(self):
+        """Load premium users into memory from PostgreSQL."""
+        conn = self.get_db_connection()
+        try:
+            with conn.cursor() as cursor:
+                cursor.execute('SELECT user_id FROM premium_users')
+                results = cursor.fetchall()
+                self.premium_users = {row[0] for row in results}
+                logger.info(f"Loaded {len(self.premium_users)} premium users from PostgreSQL.")
+        except Exception as e:
+            logger.error(f"Error loading premium users: {e}")
+            self.premium_users = set()
+
+    def _load_used_license_keys(self):
+        """Load used license keys into memory from PostgreSQL."""
+        conn = self.get_db_connection()
+        try:
+            with conn.cursor() as cursor:
+                cursor.execute('SELECT license_key FROM license_keys')
+                results = cursor.fetchall()
+                self.used_license_keys = {row[0] for row in results}
+                logger.info(f"Loaded {len(self.used_license_keys)} used license keys from PostgreSQL.")
+        except Exception as e:
+            logger.error(f"Error loading used license keys: {e}")
+            self.used_license_keys = set()
+
+    def _load_affiliates(self):
         """Load affiliates from database into memory."""
         conn = self.get_db_connection()
         try:
@@ -390,7 +415,7 @@ class ArbitrageBot:
                     'activated_licenses': self.affiliates[affiliate_id]['activated_licenses'],
                     'premium_conversions': premium_conversions,
                     'conversion_rate': (premium_conversions / self.affiliates[affiliate_id]['referred_users'] * 100 
-                                        if self.affiliates[affiliate_id]['referred_users'] > 0 else 0)
+                                      if self.affiliates[affiliate_id]['referred_users'] > 0 else 0)
                 }
         except Exception as e:
             logger.error(f"Error getting affiliate stats: {e}")
@@ -569,13 +594,16 @@ class ArbitrageBot:
             logger.error(f"Error getting users to notify: {e}")
             return []
 
-    # ... (rest of the existing ArbitrageBot methods remain unchanged) ...
+    # ... (diğer metodlar aynı şekilde devam eder) ...
 
 # Global bot instance
 bot = ArbitrageBot()
 
 # Admin user ID
 ADMIN_USER_ID = int(os.getenv("ADMIN_USER_ID", "0"))
+
+# Command Handlers (önceki koddaki gibi aynı şekilde devam eder)
+# ... (kalan kod aynı şekilde devam eder) ...
 
 # Command Handlers
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
