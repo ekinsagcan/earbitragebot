@@ -2086,6 +2086,45 @@ async def price_check_command(update: Update, context: ContextTypes.DEFAULT_TYPE
         logger.error(f"Error in price_check_command for {symbol_to_check}: {e}")
         await msg.edit_text(f"❌ An error occurred while fetching prices for **{symbol_to_check}**.")
 
+async def create_affiliate_command(update: Update, context: ContextTypes.DEFAULT_TYPE = None):
+    """Handle both command and button invocation"""
+    if isinstance(update, Update):  # Komut olarak çağrıldıysa
+        user = update.effective_user
+        message = update.message
+    else:  # CallbackQuery olarak çağrıldıysa
+        query = update
+        user = query.from_user
+        message = query.message
+    
+    if user.id != ADMIN_USER_ID:
+        if isinstance(update, Update):
+            await update.message.reply_text("❌ Admin only command.")
+        else:
+            await query.answer("❌ Admin only.")
+        return
+    
+    # Kullanıcı adını al (komut argümanı varsa onu kullan)
+    influencer_name = ' '.join(context.args) if context and context.args else user.username
+    
+    # Affiliate link oluştur
+    code = bot.create_affiliate_link(user.id, influencer_name)
+    
+    if code:
+        response = (
+            f"✅ Affiliate link created for {influencer_name}:\n\n"
+            f"https://t.me/{context.bot.username}?start={code}\n\n"
+            f"Share this link to track referrals."
+        )
+    else:
+        response = "❌ Error creating affiliate link."
+    
+    if isinstance(update, Update):
+        await update.message.reply_text(response)
+    else:
+        # Butonla çağrıldıysa mevcut mesajı güncelle
+        keyboard = [[InlineKeyboardButton("🔙 Back", callback_data='affiliate_mgmt')]]
+        await query.edit_message_text(response, reply_markup=InlineKeyboardMarkup(keyboard))
+
 
 async def check_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
