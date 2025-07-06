@@ -175,6 +175,22 @@ class ArbitrageBot:
                 raise
         return self.conn
 
+    async def cache_refresh_task(self):
+        """Her 25 saniyede bir cache'i yenile"""
+        while True:
+            try:
+                await asyncio.sleep(25)  # 25 saniye bekle
+            
+                # Sadece cache eski ise yenile
+                current_time = time.time()
+                if (current_time - self.cache_timestamp) > 20:  # Cache 20 saniyeden eski ise
+                    logger.info("Background cache refresh")
+                    await self._fetch_fresh_data(False)
+                
+            except Exception as e:
+                logger.error(f"Background cache refresh error: {e}")
+                await asyncio.sleep(60)  # Hata durumunda 1 dakika bekle
+
     def init_database(self):
         """Initialize PostgreSQL database tables."""
         conn = self.get_db_connection()
@@ -897,6 +913,47 @@ async def show_admin_affiliates(query):
     ])
     
     await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+
+async def start_background_tasks(app):
+    """Background task'ları başlat"""
+    asyncio.create_task(bot.cache_refresh_task())
+
+def main():
+    TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+    if not TOKEN:
+        logger.error("TELEGRAM_BOT_TOKEN environment variable not found!")
+        return
+    
+    # Set admin user ID from environment
+    global ADMIN_USER_ID
+    ADMIN_USER_ID = int(os.getenv("ADMIN_USER_ID", "0"))
+    
+    if ADMIN_USER_ID == 0:
+        logger.warning("ADMIN_USER_ID not set! Admin commands will not work.")
+    
+    app = Application.builder().token(TOKEN).build()
+
+    app.post_init = start_background_tasks  # Artık tanımlı
+    
+    # Command handlers
+    app.add_handler(CommandHandler("start", start))
+    # ... (diğer handler'lar) ...
+    
+    async def cleanup():
+        if bot.session and not bot.session.closed:
+            await bot.session.close()
+        if bot.conn and not bot.conn.closed:
+            bot.conn.close()
+            logger.info("PostgreSQL database connection closed.")
+    
+    app.post_stop = cleanup
+    
+    logger.info("Advanced Arbitrage Bot starting...")
+    logger.info(f"Monitoring {len(bot.exchanges)} exchanges")
+    logger.info(f"Tracking {len(bot.trusted_symbols)} trusted symbols")
+    logger.info(f"Premium users loaded: {len(bot.premium_users)}")
+    
+    app.run_polling()
 
 async def show_affiliate_details(query, affiliate_id):
     stats = bot.get_affiliate_stats(affiliate_id)
