@@ -115,6 +115,8 @@ class ArbitrageBot:
         
         # Premium users cache
         self.premium_users = set()
+
+        self.affiliate_links = {}
         
         # Database connection details from environment variable
         self.DATABASE_URL = os.getenv("DATABASE_URL")
@@ -323,6 +325,23 @@ class ArbitrageBot:
                          gumroad_sale_id TEXT
                     )
                 ''')
+                cursor.execute('''
+                    CREATE TABLE IF NOT EXISTS affiliates (
+                        affiliate_code TEXT PRIMARY KEY,
+                        influencer_id BIGINT,
+                        influencer_name TEXT,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        uses INT DEFAULT 0
+                    )
+                ''')
+                cursor.execute('''
+                    CREATE TABLE IF NOT EXISTS affiliate_users (
+                        user_id BIGINT,
+                        affiliate_code TEXT,
+                        joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        PRIMARY KEY (user_id, affiliate_code)
+                    )
+                ''')
             conn.commit()
             logger.info("PostgreSQL tables initialized or already exist.")
         except Exception as e:
@@ -416,6 +435,74 @@ class ArbitrageBot:
         except Exception as e:
             logger.error(f"License verification error: {str(e)}")
             return {'success': False, 'error': str(e)}
+
+    def create_affiliate_link(self, influencer_id: int, influencer_name: str) -> str:
+        """Create a unique affiliate link"""
+        code = f"ref-{influencer_id}-{int(time.time())}"
+        conn = self.get_db_connection()
+        try:
+            with conn.cursor() as cursor:
+                cursor.execute('''
+                    INSERT INTO affiliates 
+                    (affiliate_code, influencer_id, influencer_name)
+                    VALUES (%s, %s, %s)
+                ''', (code, influencer_id, influencer_name))
+            conn.commit()
+            return code
+        except Exception as e:
+            logger.error(f"Error creating affiliate link: {e}")
+            conn.rollback()
+            return None
+
+    def track_affiliate_user(self, user_id: int, affiliate_code: str):
+        """Track user who came from affiliate link"""
+        conn = self.get_db_connection()
+        try:
+            with conn.cursor() as cursor:
+                # Add user to affiliate tracking
+                cursor.execute('''
+                    INSERT INTO affiliate_users (user_id, affiliate_code)
+                    VALUES (%s, %s)
+                    ON CONFLICT DO NOTHING
+                ''', (user_id, affiliate_code))
+            
+                # Increment affiliate uses count
+                cursor.execute('''
+                    UPDATE affiliates 
+                    SET uses = uses + 1
+                    WHERE affiliate_code = %s
+                ''', (affiliate_code,))
+            conn.commit()
+        except Exception as e:
+            logger.error(f"Error tracking affiliate user: {e}")
+            conn.rollback()
+
+    def get_affiliate_stats(self) -> List[Dict]:
+        """Get affiliate statistics"""
+        conn = self.get_db_connection()
+        try:
+            with conn.cursor() as cursor:
+                cursor.execute('''
+                    SELECT a.affiliate_code, a.influencer_name, a.uses, 
+                           COUNT(p.user_id) as premium_conversions
+                    FROM affiliates a
+                    LEFT JOIN affiliate_users u ON a.affiliate_code = u.affiliate_code
+                    LEFT JOIN premium_users p ON u.user_id = p.user_id
+                    GROUP BY a.affiliate_code, a.influencer_name, a.uses
+                    ORDER BY a.uses DESC
+                ''')
+                return [
+                    {
+                        'code': row[0],
+                        'name': row[1],
+                        'total_uses': row[2],
+                        'premium_conversions': row[3]
+                    }
+                    for row in cursor.fetchall()
+                ]
+        except Exception as e:
+            logger.error(f"Error getting affiliate stats: {e}")
+            return []
             
     def activate_license_key(self, license_key: str, user_id: int, username: str, sale_data: Dict):
         """Activate license key and add premium subscription in PostgreSQL."""
@@ -552,6 +639,46 @@ class ArbitrageBot:
         except Exception as e:
             logger.error(f"Error adding premium user: {e}")
             conn.rollback()
+
+    async def create_affiliate_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if update.effective_user.id != ADMIN_USER_ID:
+            await update.message.reply_text("❌ Access denied. Admin only command.")
+            return
+    
+        influencer_name = ' '.join(context.args) if context.args else update.effective_user.username
+        code = bot.create_affiliate_link(update.effective_user.id, influencer_name)
+    
+        if code:
+            await update.message.reply_text(
+                f"✅ Affiliate link created for {influencer_name}:\n\n"
+                f"https://t.me/your_bot_username?start={code}\n\n"
+                f"Share this link to track referrals."
+            )
+        else:
+            await update.message.reply_text("❌ Error creating affiliate link.")
+
+    async def affiliate_stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if update.effective_user.id != ADMIN_USER_ID:
+            await update.message.reply_text("❌ Access denied. Admin only command.")
+            return
+    
+        stats = bot.get_affiliate_stats()
+    
+        if not stats:
+            await update.message.reply_text("No affiliate data available.")
+            return
+    
+        text = "📊 **Affiliate Statistics**\n\n"
+        for stat in stats:
+            text += (
+                f"👤 Influencer: {stat['name']}\n"
+                f"🔗 Code: {stat['code']}\n"
+                f"👥 Total Referrals: {stat['total_uses']}\n"
+                f"💎 Premium Conversions: {stat['premium_conversions']}\n"
+                f"📈 Conversion Rate: {stat['premium_conversions']/stat['total_uses']*100:.1f}%\n\n"
+            )
+    
+        await update.message.reply_text(text)
 
     def remove_premium_user(self, user_id: int):
         """Remove premium user (admin command) from PostgreSQL."""
