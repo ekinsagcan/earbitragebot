@@ -401,7 +401,7 @@ class ArbitrageBot:
         try:
             conn = self.get_db_connection()
             with conn.cursor() as cursor:
-                # Tablo oluşturma sorguları burada...
+                # Create users table
                 cursor.execute('''
                     CREATE TABLE IF NOT EXISTS users (
                         user_id BIGINT PRIMARY KEY,
@@ -410,8 +410,8 @@ class ArbitrageBot:
                         last_active TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                     )
                 ''')
-                conn.commit()
-
+            
+                # Create arbitrage_data table
                 cursor.execute('''
                     CREATE TABLE IF NOT EXISTS arbitrage_data (
                         id SERIAL PRIMARY KEY,
@@ -424,9 +424,9 @@ class ArbitrageBot:
                         volume_24h REAL,
                         timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                         user_id BIGINT REFERENCES users(user_id)
-                 ''')
-                conn.commit()
- 
+                ''')
+            
+                # Create premium_users table
                 cursor.execute('''
                     CREATE TABLE IF NOT EXISTS premium_users (
                         user_id BIGINT PRIMARY KEY REFERENCES users(user_id),
@@ -436,8 +436,8 @@ class ArbitrageBot:
                         subscription_end DATE
                     )
                 ''')
-                conn.commit()
- 
+            
+                # Create license_keys table
                 cursor.execute('''
                     CREATE TABLE IF NOT EXISTS license_keys (
                         license_key TEXT PRIMARY KEY,
@@ -447,8 +447,8 @@ class ArbitrageBot:
                         gumroad_sale_id TEXT
                     )
                 ''')
-                conn.commit()
- 
+            
+                # Create affiliates table
                 cursor.execute('''
                     CREATE TABLE IF NOT EXISTS affiliates (
                         affiliate_code TEXT PRIMARY KEY,
@@ -458,8 +458,8 @@ class ArbitrageBot:
                         uses INT DEFAULT 0
                     )
                 ''')
-                conn.commit()
- 
+            
+                # Create affiliate_users table
                 cursor.execute('''
                     CREATE TABLE IF NOT EXISTS affiliate_users (
                         user_id BIGINT REFERENCES users(user_id),
@@ -468,16 +468,18 @@ class ArbitrageBot:
                         PRIMARY KEY (user_id, affiliate_code)
                     )
                 ''')
+            
                 conn.commit()
+                logger.info("Database tables created successfully")
+            
         except Exception as e:
             logger.error(f"Error initializing database: {e}")
             if conn:
                 conn.rollback()
-            raise  # Hatayı yukarı fırlat
+            raise
         finally:
             if conn:
                 conn.close()
-
 
     async def cache_refresh_task(self):
         """Refresh cache every 25 seconds"""
