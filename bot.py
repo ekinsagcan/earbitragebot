@@ -469,12 +469,12 @@ class ArbitrageBot:
                 ''')
             conn.commit()
 
-        except Exception as e:
-            logger.error(f"Database initialization error: {e}")
-            conn.rollback()
-        finally:
-            if conn:
-                conn.close()
+            except Exception as e:
+                logger.error(f"Database initialization error: {e}")
+                conn.rollback()
+            finally:
+                if conn:
+                    conn.close()
 
     async def cache_refresh_task(self):
         """Refresh cache every 25 seconds"""
