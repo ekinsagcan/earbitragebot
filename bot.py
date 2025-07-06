@@ -451,6 +451,85 @@ class ArbitrageBot:
         except Exception as e:
             logger.error(f"Error activating license key: {e}")
             conn.rollback() # Rollback changes if an error occurs
+
+    async def show_send_message_options(query):
+        text = "📩 **Send Message to Users**\n\nSelect recipient group:"
+    
+        keyboard = [
+            [InlineKeyboardButton("👥 All Users", callback_data='send_all')],
+            [InlineKeyboardButton("💎 Premium Users", callback_data='send_premium')],
+            [InlineKeyboardButton("🆓 Free Users", callback_data='send_free')],
+            [InlineKeyboardButton("👤 Specific User", callback_data='send_specific')],
+            [InlineKeyboardButton("🔙 Admin Panel", callback_data='admin')]
+        ]
+    
+        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+
+    async def handle_send_message_choice(query):
+        choice = query.data.replace('send_', '')
+        context.user_data['message_recipient'] = choice
+    
+        if choice == 'specific':
+            await query.edit_message_text("👤 Enter the username or ID of the user you want to message:")
+        else:
+            await query.edit_message_text("✉️ Enter the message you want to send:")
+
+    async def broadcast_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if update.effective_user.id != ADMIN_USER_ID:
+            return
+    
+        recipient_type = context.user_data.get('message_recipient')
+        message_text = update.message.text
+    
+        if recipient_type == 'specific':
+            # Handle specific user messaging
+            user_input = message_text.strip()
+            try:
+                if user_input.isdigit():
+                    user_id = int(user_input)
+                    await context.bot.send_message(user_id, f"📨 Admin Message:\n\n{context.user_data['message_text']}")
+                    await update.message.reply_text(f"✅ Message sent to user ID {user_id}.")
+                else:
+                    username = user_input.replace('@', '')
+                    user_id = bot.get_user_id_by_username(username)
+                    if user_id:
+                        await context.bot.send_message(user_id, f"📨 Admin Message:\n\n{context.user_data['message_text']}")
+                        await update.message.reply_text(f"✅ Message sent to @{username}.")
+                    else:
+                        await update.message.reply_text(f"❌ User @{username} not found.")
+            except Exception as e:
+                await update.message.reply_text(f"❌ Error sending message: {e}")
+        else:
+            # Handle group messaging
+            users = []
+            if recipient_type == 'all':
+                users = bot.get_all_users()
+            elif recipient_type == 'premium':
+                users = [{'user_id': uid} for uid in bot.premium_users]
+            elif recipient_type == 'free':
+                users = bot.get_free_users()
+        
+            success = 0
+            failed = 0
+        
+            msg = await update.message.reply_text(f"📨 Sending message to {len(users)} users...")
+        
+            for user in users:
+                try:
+                    await context.bot.send_message(
+                        user['user_id'],
+                        f"📨 Admin Message:\n\n{message_text}"
+                    )
+                    success += 1
+                except Exception as e:
+                    failed += 1
+        
+            await msg.edit_text(
+                f"📨 Message broadcast results:\n"
+                f"• Total recipients: {len(users)}\n"
+                f"• Successfully sent: {success}\n"
+                f"• Failed to send: {failed}"
+            )
     
     def add_premium_user(self, user_id: int, username: str = "", days: int = 30):
         """Add premium user (admin command) to PostgreSQL."""
