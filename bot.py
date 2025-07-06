@@ -857,9 +857,10 @@ async def show_admin_affiliates(query):
     
     # Add buttons for each affiliate (max 5)
     for aff in affiliates[:5]:
+        affiliate_id = aff['affiliate_id']  # Önce değişkene atayalım
         keyboard.append([InlineKeyboardButton(
             f"🔍 {aff['name']} ({aff['referred_users']})", 
-            callback_data=f'affiliate_{aff['affiliate_id']}'
+            callback_data=f'affiliate_{affiliate_id}'
         )])
     
     keyboard.extend([
