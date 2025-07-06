@@ -1483,7 +1483,7 @@ async def admin_check_command(update: Update, context: ContextTypes.DEFAULT_TYPE
                     "symbol": symbol,
                     "buy_exchange": buy_exchange,
                     "buy_price": buy_price,
-                    "sell_exchange": sell_exchange,
+                    "sell_exchange": sell_price,
                     "sell_price": sell_price,
                     "profit_percentage": profit_percentage,
                     "volume_usd": volume_usd
