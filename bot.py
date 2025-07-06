@@ -117,6 +117,9 @@ class ArbitrageBot:
         self.premium_users = set()
 
         self.affiliate_links = {}
+
+        self.init_database()
+        self.update_arbitrage_table()
         
         # Database connection details from environment variable
         self.DATABASE_URL = os.getenv("DATABASE_URL")
@@ -1724,39 +1727,63 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     try:
+        # First update the table schema if needed
+        bot.update_arbitrage_table()
+        
         conn = bot.get_db_connection()
         
-        # Toplam kullanıcı sayısı
+        text = "📊 **Advanced Bot Statistics**\n\n"
+        
+        # Basic counts
         with conn.cursor() as cursor:
             cursor.execute('SELECT COUNT(*) FROM users')
             total_users = cursor.fetchone()[0]
-        
-        # Premium kullanıcı sayısı
-        with conn.cursor() as cursor:
+            text += f"👥 Total users: {total_users}\n"
+            
             cursor.execute('SELECT COUNT(*) FROM premium_users')
             premium_users = cursor.fetchone()[0]
-        
-        # Arbitrage kayıt sayısı
-        with conn.cursor() as cursor:
+            text += f"💎 Premium users: {premium_users}\n"
+            
             cursor.execute('SELECT COUNT(*) FROM arbitrage_data')
-            total_arbitrage_records = cursor.fetchone()[0]
+            total_records = cursor.fetchone()[0]
+            text += f"📈 Arbitrage records: {total_records}\n\n"
         
-        # Eğer user_id sütunu yoksa alternatif sorgu
+        # Top users - with fallback if user_id not available
         try:
             with conn.cursor() as cursor:
                 cursor.execute('''
-                    SELECT user_id, COUNT(*) as activity_count 
-                    FROM arbitrage_data 
-                    GROUP BY user_id 
-                    ORDER BY activity_count DESC 
+                    SELECT u.username, COUNT(a.id) as activity_count
+                    FROM arbitrage_data a
+                    JOIN users u ON a.user_id = u.user_id
+                    GROUP BY u.username
+                    ORDER BY activity_count DESC
                     LIMIT 5
                 ''')
                 top_users = cursor.fetchall()
+                
+                if top_users:
+                    text += "🏆 **Top Active Users:**\n"
+                    for i, (username, count) in enumerate(top_users, 1):
+                        text += f"{i}. @{username or 'Unknown'}: {count} checks\n"
+                else:
+                    text += "ℹ️ No user activity data available\n"
         except psycopg2.Error as e:
-            logger.warning(f"user_id column not found, using alternative query: {e}")
-            top_users = []
+            logger.warning(f"Couldn't get user activity stats: {e}")
+            text += "⚠️ User activity stats not available\n"
         
-        # Diğer istatistikler...
+        # Recent premium activations
+        with conn.cursor() as cursor:
+            cursor.execute('''
+                SELECT username, added_date 
+                FROM premium_users 
+                ORDER BY added_date DESC 
+                LIMIT 5
+            ''')
+            recent_premium = cursor.fetchall()
+            
+            text += "\n🆕 **Recent Premium Activations:**\n"
+            for i, (username, added_date) in enumerate(recent_premium, 1):
+                text += f"{i}. @{username or 'Unknown'} on {added_date}\n"
         
         await update.message.reply_text(text)
         
