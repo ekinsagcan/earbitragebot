@@ -125,6 +125,8 @@ class ArbitrageBot:
             logger.error("DATABASE_URL environment variable not found!")
             raise ValueError("DATABASE_URL must be set for database connection.")
 
+        self.ensure_tables_exist()
+
         self.conn = None
         self._conn = None
         self._conn_lock = threading.Lock()
@@ -173,6 +175,25 @@ class ArbitrageBot:
             'api_requests': 0,
             'concurrent_users': 0
         }
+
+     def ensure_tables_exist(self):
+        """Ensure all required tables exist with correct structure"""
+        conn = self.get_db_connection()
+        try:
+            with conn.cursor() as cursor:
+                # affiliates tablosu kontrolü
+                cursor.execute("""
+                    SELECT column_name 
+                    FROM information_schema.columns 
+                    WHERE table_name = 'affiliates'
+                """)
+                if not cursor.fetchall():
+                    self.recreate_affiliates_table()
+        except Exception as e:
+            logger.error(f"Error checking tables: {e}")
+        finally:
+            if conn:
+                conn.close()
 
     def get_db_connection(self):
         """Get or create a PostgreSQL database connection."""
