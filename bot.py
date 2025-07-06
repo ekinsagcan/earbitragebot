@@ -208,6 +208,52 @@ class ArbitrageBot:
                 finally:
                     self._conn = None
 
+    def check_table_structure():
+        conn = bot.get_db_connection()
+        try:
+            with conn.cursor() as cursor:
+                cursor.execute("""
+                    SELECT column_name, data_type 
+                    FROM information_schema.columns 
+                    WHERE table_name = 'affiliates'
+                """)
+                columns = cursor.fetchall()
+                logger.info("Current affiliates table structure:")
+                for col in columns:
+                    logger.info(f"- {col[0]}: {col[1]}")
+        except Exception as e:
+            logger.error(f"Error checking table structure: {e}")
+        finally:
+            if conn:
+                conn.close()
+
+    def recreate_affiliates_table():
+        conn = bot.get_db_connection()
+        try:
+             with conn.cursor() as cursor:
+                # Önceki tabloyu sil (DİKKAT: Veriler silinecek!)
+                cursor.execute("DROP TABLE IF EXISTS affiliates CASCADE")
+            
+                # Yeni tabloyu doğru şekilde oluştur
+                cursor.execute('''
+                    CREATE TABLE affiliates (
+                        affiliate_code TEXT PRIMARY KEY,
+                        influencer_id BIGINT NOT NULL,
+                        influencer_name TEXT NOT NULL,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        uses INT DEFAULT 0
+                    )
+                ''')
+                conn.commit()
+                logger.info("Affiliates table recreated successfully")
+        except Exception as e:
+            logger.error(f"Error recreating table: {e}")
+            conn.rollback()
+        finally:
+            if conn:
+                conn.close()
+
+
     def fix_affiliates_table():
         conn = bot.get_db_connection()
         try:
