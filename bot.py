@@ -5,8 +5,8 @@ from datetime import datetime, timedelta
 from typing import Dict, List, Tuple, Set
 import aiohttp
 from aiohttp import TCPConnector
-import psycopg2 # PostgreSQL için yeni import
-from urllib.parse import urlparse # DATABASE_URL'yi parse etmek için yeni import
+import psycopg2
+from urllib.parse import urlparse
 import time
 from threading import Lock
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -124,38 +124,38 @@ class ArbitrageBot:
             logger.error("DATABASE_URL environment variable not found!")
             raise ValueError("DATABASE_URL must be set for database connection.")
 
-        self.conn = None # We will establish connection when needed
+        self.conn = None
         self.init_database()
         self.load_premium_users()
         self.load_used_license_keys()
 
-        self.max_profit_threshold = 20.0  # Normal kullanıcılar için %20 limit
-        self.admin_max_profit_threshold = 40.0 # Adminler için %40 limit (önceki komuttan kalma, şu an yeni komutta kullanılmayacak)
+        self.max_profit_threshold = 20.0
+        self.admin_max_profit_threshold = 40.0
 
         # License key validation cache
         self.used_license_keys = set()
         
-        # Cache sistemi
+        # Cache system
         self.cache_data = {}
         self.cache_timestamp = 0
-        self.cache_duration = 30  # 30 saniye cache
+        self.cache_duration = 30  # 30 seconds cache
         self.cache_lock = Lock()
         
-        # API request limitleri
+        # API request limits
         self.is_fetching = False
         self.last_fetch_time = 0
-        self.min_fetch_interval = 15  # Minimum 15 saniye arayla fetch
+        self.min_fetch_interval = 15  # Minimum 15 seconds between fetches
 
         # Connection pool
         self.connector = TCPConnector(
-            limit=50,  # Toplam connection sayısı
-            limit_per_host=5,  # Her host için max connection
+            limit=50,
+            limit_per_host=5,
             ttl_dns_cache=300,
             use_dns_cache=True,
         )
         self.session = None
         
-        # Request semaphore (aynı anda max 10 request)
+        # Request semaphore (max 10 concurrent requests)
         self.request_semaphore = asyncio.Semaphore(10)
         
         self.stats = {
@@ -169,14 +169,13 @@ class ArbitrageBot:
         """Get or create a PostgreSQL database connection."""
         if self.conn is None or self.conn.closed:
             try:
-                # Parse the DATABASE_URL to get individual components
                 url = urlparse(self.DATABASE_URL)
                 self.conn = psycopg2.connect(
                     host=url.hostname,
                     port=url.port,
                     user=url.username,
                     password=url.password,
-                    database=url.path[1:] # Slice to remove the leading '/'
+                    database=url.path[1:]
                 )
                 logger.info("Successfully connected to PostgreSQL database.")
             except Exception as e:
@@ -216,42 +215,50 @@ class ArbitrageBot:
             return []
 
     async def get_cached_arbitrage_data(self, is_premium: bool = False):
-        # Cache hit/miss sayacı
-        if self.cache_data and (time.time() - self.cache_timestamp) < self.cache_duration:
-            self.stats['cache_hits'] += 1
-        else:
-            self.stats['cache_misses'] += 1
+        """Get cached arbitrage data"""
+        current_time = time.time()
+    
+        with self.cache_lock:
+            if (current_time - self.cache_timestamp) < self.cache_duration and self.cache_data:
+                logger.info("Returning cached data")
+                return self.calculate_arbitrage(self.cache_data, is_premium)
+        
+            if self.is_fetching:
+                if self.cache_data:
+                    logger.info("Fetch in progress, returning last cached data")
+                    return self.calculate_arbitrage(self.cache_data, is_premium)
+        
+            if (current_time - self.last_fetch_time) < self.min_fetch_interval:
+                if self.cache_data:
+                    logger.info("Rate limit protection, returning cached data")
+                    return self.calculate_arbitrage(self.cache_data, is_premium)
+    
+        return await self._fetch_fresh_data(is_premium)
 
     async def get_admin_arbitrage_data(self, is_premium: bool = False):
-        """Adminler için Huobi hariç ve yüksek limitli arbitraj verisi getir"""
-        # Orijinal limiti sakla
+        """Get arbitrage data for admin with higher threshold"""
         original_limit = self.max_profit_threshold
     
         try:
-            # Admin limitini geçici olarak ayarla
             self.max_profit_threshold = self.admin_max_profit_threshold
         
             current_time = time.time()
             with self.cache_lock:
                 if (current_time - self.cache_timestamp) < self.cache_duration and self.cache_data:
                     logger.info("Returning cached data for admin")
-                    # Huobi verilerini filtrele
                     filtered_data = {ex: data for ex, data in self.cache_data.items() if ex != 'huobi'}
-                    return self.calculate_arbitrage(filtered_data, True)  # Admin olduğu için premium=True
+                    return self.calculate_arbitrage(filtered_data, True)
 
-            # Yeni veri çek
             all_data = await self.get_all_prices_with_volume()
-            # Huobi verilerini filtrele
             filtered_data = {ex: data for ex, data in all_data.items() if ex != 'huobi'}
         
-            return self.calculate_arbitrage(filtered_data, True)  # Admin olduğu için premium=True
+            return self.calculate_arbitrage(filtered_data, True)
     
         finally:
-            # Orijinal limiti geri yükle
             self.max_profit_threshold = original_limit
 
     async def get_session(self):
-        """Paylaşılan session döndür"""
+        """Get shared session"""
         if self.session is None or self.session.closed:
             timeout = aiohttp.ClientTimeout(total=10, connect=5)
             self.session = aiohttp.ClientSession(
@@ -262,13 +269,17 @@ class ArbitrageBot:
         return self.session
 
     async def fetch_prices_with_volume(self, exchange: str) -> Dict[str, Dict]:
-        """Rate limited price fetch"""
+        """Fetch prices and volumes from exchange"""
         async with self.request_semaphore:
             try:
                 session = await self.get_session()
                 url = self.exchanges[exchange]
                 
-                async with session.get(url) as response:
+                headers = {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+                }
+                
+                async with session.get(url, headers=headers) as response:
                     if response.status != 200:
                         logger.warning(f"{exchange} returned status {response.status}")
                         return {}
@@ -277,130 +288,104 @@ class ArbitrageBot:
                     return self.parse_exchange_data(exchange, data)
                     
             except Exception as e:
-                logger.error(f"{exchange} error: {str(e)}")
+                logger.error(f"{exchange} price/volume error: {str(e)}")
                 return {}
-    
+
     def init_database(self):
         """Initialize PostgreSQL database tables."""
         conn = self.get_db_connection()
         try:
             with conn.cursor() as cursor:
-                # Her tablo için ayrı try-except bloğu
-                try:
-                    cursor.execute('''
-                        CREATE TABLE IF NOT EXISTS users (
-                            user_id BIGINT PRIMARY KEY,
-                            username TEXT,
-                            subscription_end DATE,
-                            is_premium BOOLEAN DEFAULT FALSE,
-                            added_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                        )
-                    ''')
-                    conn.commit()
-                except Exception as e:
-                    logger.error(f"Error creating users table: {e}")
-                    conn.rollback()
+                cursor.execute('''
+                    CREATE TABLE IF NOT EXISTS users (
+                        user_id BIGINT PRIMARY KEY,
+                        username TEXT,
+                        subscription_end DATE,
+                        is_premium BOOLEAN DEFAULT FALSE,
+                        added_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                ''')
+                conn.commit()
 
-                try:
-                    cursor.execute('''
-                        CREATE TABLE IF NOT EXISTS arbitrage_data (
-                            id SERIAL PRIMARY KEY,
-                            symbol TEXT,
-                            exchange1 TEXT,
-                            exchange2 TEXT,
-                            price1 REAL,
-                            price2 REAL,
-                            profit_percent REAL,
-                            volume_24h REAL,
-                            timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                        )
-                    ''')
-                    conn.commit()
-                except Exception as e:
-                    logger.error(f"Error creating arbitrage_data table: {e}")
-                    conn.rollback()
+                cursor.execute('''
+                    CREATE TABLE IF NOT EXISTS arbitrage_data (
+                        id SERIAL PRIMARY KEY,
+                        symbol TEXT,
+                        exchange1 TEXT,
+                        exchange2 TEXT,
+                        price1 REAL,
+                        price2 REAL,
+                        profit_percent REAL,
+                        volume_24h REAL,
+                        timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                ''')
+                conn.commit()
 
-                try:
-                    cursor.execute('''
-                        CREATE TABLE IF NOT EXISTS premium_users (
-                            user_id BIGINT PRIMARY KEY,
-                            username TEXT,
-                            added_by_admin BOOLEAN DEFAULT TRUE,
-                            added_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                            subscription_end DATE
-                        )
-                    ''')
-                    conn.commit()
-                except Exception as e:
-                    logger.error(f"Error creating premium_users table: {e}")
-                    conn.rollback()
+                cursor.execute('''
+                    CREATE TABLE IF NOT EXISTS premium_users (
+                        user_id BIGINT PRIMARY KEY,
+                        username TEXT,
+                        added_by_admin BOOLEAN DEFAULT TRUE,
+                        added_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        subscription_end DATE
+                    )
+                ''')
+                conn.commit()
 
-                try:
-                    cursor.execute('''
-                        CREATE TABLE IF NOT EXISTS license_keys (
-                            license_key TEXT PRIMARY KEY,
-                            user_id BIGINT,
-                            username TEXT,
-                            used_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                           gumroad_sale_id TEXT
-                        )
-                    ''')
-                    conn.commit()
-                except Exception as e:
-                    logger.error(f"Error creating license_keys table: {e}")
-                    conn.rollback()
+                cursor.execute('''
+                    CREATE TABLE IF NOT EXISTS license_keys (
+                        license_key TEXT PRIMARY KEY,
+                        user_id BIGINT,
+                        username TEXT,
+                        used_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        gumroad_sale_id TEXT
+                    )
+                ''')
+                conn.commit()
 
-                try:
-                    cursor.execute('''
-                        CREATE TABLE IF NOT EXISTS affiliates (
-                            affiliate_code TEXT PRIMARY KEY,
-                            influencer_id BIGINT,
-                            influencer_name TEXT,
-                            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                            uses INT DEFAULT 0
-                        )
-                    ''')
-                    conn.commit()
-                except Exception as e:
-                    logger.error(f"Error creating affiliates table: {e}")
-                    conn.rollback()
+                cursor.execute('''
+                    CREATE TABLE IF NOT EXISTS affiliates (
+                        affiliate_code TEXT PRIMARY KEY,
+                        influencer_id BIGINT,
+                        influencer_name TEXT,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        uses INT DEFAULT 0
+                    )
+                ''')
+                conn.commit()
 
-                try:
-                    cursor.execute('''
-                        CREATE TABLE IF NOT EXISTS affiliate_users (
-                            user_id BIGINT,
-                            affiliate_code TEXT,
-                            joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                            PRIMARY KEY (user_id, affiliate_code)
-                        )
-                    ''')
-                    conn.commit()
-                except Exception as e:
-                    logger.error(f"Error creating affiliate_users table: {e}")
-                    conn.rollback()
+                cursor.execute('''
+                    CREATE TABLE IF NOT EXISTS affiliate_users (
+                        user_id BIGINT,
+                        affiliate_code TEXT,
+                        joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        PRIMARY KEY (user_id, affiliate_code)
+                    )
+                ''')
+                conn.commit()
 
         except Exception as e:
-            logger.error(f"General database initialization error: {e}")
+            logger.error(f"Database initialization error: {e}")
             conn.rollback()
         finally:
             if conn:
                 conn.close()
 
     async def cache_refresh_task(self):
-        """Her 25 saniyede bir cache'i yenile"""
+        """Refresh cache every 25 seconds"""
         while True:
             try:
-                await asyncio.sleep(25)  # 25 saniye bekle
+                await asyncio.sleep(25)
             
-                # Sadece cache eski ise yenile
                 current_time = time.time()
-                if (current_time - self.cache_timestamp) > 20:  # Cache 20 saniyeden eski ise
+                if (current_time - self.cache_timestamp) > 20:
                     logger.info("Background cache refresh")
                     await self._fetch_fresh_data(False)
                 
             except Exception as e:
                 logger.error(f"Background cache refresh error: {e}")
-                await asyncio.sleep(60)  # Hata durumunda 1 dakika bekle
+                await asyncio.sleep(60)
     
     def load_premium_users(self):
         """Load premium users into memory from PostgreSQL."""
@@ -413,7 +398,7 @@ class ArbitrageBot:
                 logger.info(f"Loaded {len(self.premium_users)} premium users from PostgreSQL.")
         except Exception as e:
             logger.error(f"Error loading premium users: {e}")
-            self.premium_users = set() # Ensure it's still a set if error occurs
+            self.premium_users = set()
 
     def load_used_license_keys(self):
         """Load used license keys into memory from PostgreSQL."""
@@ -425,12 +410,11 @@ class ArbitrageBot:
                 self.used_license_keys = {row[0] for row in results}
         except Exception as e:
             logger.error(f"Error loading used license keys: {e}")
-            self.used_license_keys = set() # Ensure it's still a set if error occurs
+            self.used_license_keys = set()
 
     async def verify_gumroad_license(self, license_key: str) -> Dict:
         """Verify license key with Gumroad API"""
         try:
-            # Debug: Environment variables kontrolü
             logger.info(f"GUMROAD_PRODUCT_ID: {GUMROAD_PRODUCT_ID}")
             logger.info(f"GUMROAD_ACCESS_TOKEN: {'SET' if GUMROAD_ACCESS_TOKEN else 'EMPTY'}")
         
@@ -446,7 +430,6 @@ class ArbitrageBot:
                 'increment_uses_count': 'false'
             }
         
-            # Debug: Request bilgilerini log'la
             logger.info(f"Verifying license: {license_key}")
             logger.info(f"Request URL: {url}")
             logger.info(f"Request data: {data}")
@@ -455,7 +438,6 @@ class ArbitrageBot:
                 async with session.post(url, headers=headers, json=data) as response:
                     response_text = await response.text()
                 
-                    # Debug: Response bilgilerini log'la
                     logger.info(f"Response status: {response.status}")
                     logger.info(f"Response text: {response_text}")
                 
@@ -494,14 +476,12 @@ class ArbitrageBot:
         conn = self.get_db_connection()
         try:
             with conn.cursor() as cursor:
-                # Add user to affiliate tracking
                 cursor.execute('''
                     INSERT INTO affiliate_users (user_id, affiliate_code)
                     VALUES (%s, %s)
                     ON CONFLICT DO NOTHING
                 ''', (user_id, affiliate_code))
             
-                # Increment affiliate uses count
                 cursor.execute('''
                     UPDATE affiliates 
                     SET uses = uses + 1
@@ -512,54 +492,52 @@ class ArbitrageBot:
             logger.error(f"Error tracking affiliate user: {e}")
             conn.rollback()
 
-def get_affiliate_stats(self) -> List[Dict]:
-    """Get affiliate statistics"""
-    conn = self.get_db_connection()
-    try:
-        with conn.cursor() as cursor:
-            cursor.execute('''
-                SELECT 
-                    a.affiliate_code, 
-                    a.influencer_name, 
-                    a.uses, 
-                    COUNT(p.user_id) as premium_conversions
-                FROM affiliates a
-                LEFT JOIN affiliate_users u ON a.affiliate_code = u.affiliate_code
-                LEFT JOIN premium_users p ON u.user_id = p.user_id
-                GROUP BY a.affiliate_code, a.influencer_name, a.uses
-                ORDER BY a.uses DESC
-            ''')
-            results = cursor.fetchall()
-            return [
-                {
-                    'code': row[0],
-                    'name': row[1],
-                    'total_uses': row[2],
-                    'premium_conversions': row[3] or 0
-                }
-                for row in results
-            ]
-    except Exception as e:
-        logger.error(f"Error getting affiliate stats: {e}")
-        conn.rollback()
-        return []
-    finally:
-        if conn:
-            conn.close()
+    def get_affiliate_stats(self) -> List[Dict]:
+        """Get affiliate statistics"""
+        conn = self.get_db_connection()
+        try:
+            with conn.cursor() as cursor:
+                cursor.execute('''
+                    SELECT 
+                        a.affiliate_code, 
+                        a.influencer_name, 
+                        a.uses, 
+                        COUNT(p.user_id) as premium_conversions
+                    FROM affiliates a
+                    LEFT JOIN affiliate_users u ON a.affiliate_code = u.affiliate_code
+                    LEFT JOIN premium_users p ON u.user_id = p.user_id
+                    GROUP BY a.affiliate_code, a.influencer_name, a.uses
+                    ORDER BY a.uses DESC
+                ''')
+                results = cursor.fetchall()
+                return [
+                    {
+                        'code': row[0],
+                        'name': row[1],
+                        'total_uses': row[2],
+                        'premium_conversions': row[3] or 0
+                    }
+                    for row in results
+                ]
+        except Exception as e:
+            logger.error(f"Error getting affiliate stats: {e}")
+            conn.rollback()
+            return []
+        finally:
+            if conn:
+                conn.close()
             
     def activate_license_key(self, license_key: str, user_id: int, username: str, sale_data: Dict):
         """Activate license key and add premium subscription in PostgreSQL."""
         conn = self.get_db_connection()
         try:
             with conn.cursor() as cursor:
-                # Save license key usage
                 cursor.execute('''
                     INSERT INTO license_keys 
                     (license_key, user_id, username, gumroad_sale_id)
                     VALUES (%s, %s, %s, %s)
                 ''', (license_key, user_id, username, sale_data.get('sale_id', '')))
                 
-                # Add premium subscription (30 days)
                 end_date = (datetime.now() + timedelta(days=30)).strftime('%Y-%m-%d')
                 cursor.execute('''
                     INSERT INTO premium_users 
@@ -573,16 +551,15 @@ def get_affiliate_stats(self) -> List[Dict]:
                 
             conn.commit()
             
-            # Update memory cache
             self.used_license_keys.add(license_key)
             self.premium_users.add(user_id)
             
             logger.info(f"License activated: {license_key} for user {user_id}.")
         except Exception as e:
             logger.error(f"Error activating license key: {e}")
-            conn.rollback() # Rollback changes if an error occurs
+            conn.rollback()
 
-    async def show_send_message_options(query):
+    async def show_send_message_options(self, query):
         text = "📩 **Send Message to Users**\n\nSelect recipient group:"
     
         keyboard = [
@@ -595,16 +572,16 @@ def get_affiliate_stats(self) -> List[Dict]:
     
         await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
 
-    async def handle_send_message_choice(query):
+    async def handle_send_message_choice(self, query):
         choice = query.data.replace('send_', '')
-        context.user_data['message_recipient'] = choice
+        query._bot_data['message_recipient'] = choice
     
         if choice == 'specific':
             await query.edit_message_text("👤 Enter the username or ID of the user you want to message:")
         else:
             await query.edit_message_text("✉️ Enter the message you want to send:")
 
-    async def broadcast_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    async def broadcast_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if update.effective_user.id != ADMIN_USER_ID:
             return
     
@@ -612,7 +589,6 @@ def get_affiliate_stats(self) -> List[Dict]:
         message_text = update.message.text
     
         if recipient_type == 'specific':
-            # Handle specific user messaging
             user_input = message_text.strip()
             try:
                 if user_input.isdigit():
@@ -621,7 +597,7 @@ def get_affiliate_stats(self) -> List[Dict]:
                     await update.message.reply_text(f"✅ Message sent to user ID {user_id}.")
                 else:
                     username = user_input.replace('@', '')
-                    user_id = bot.get_user_id_by_username(username)
+                    user_id = self.get_user_id_by_username(username)
                     if user_id:
                         await context.bot.send_message(user_id, f"📨 Admin Message:\n\n{context.user_data['message_text']}")
                         await update.message.reply_text(f"✅ Message sent to @{username}.")
@@ -630,14 +606,13 @@ def get_affiliate_stats(self) -> List[Dict]:
             except Exception as e:
                 await update.message.reply_text(f"❌ Error sending message: {e}")
         else:
-            # Handle group messaging
             users = []
             if recipient_type == 'all':
-                users = bot.get_all_users()
+                users = self.get_all_users()
             elif recipient_type == 'premium':
-                users = [{'user_id': uid} for uid in bot.premium_users]
+                users = [{'user_id': uid} for uid in self.premium_users]
             elif recipient_type == 'free':
-                users = bot.get_free_users()
+                users = self.get_free_users()
         
             success = 0
             failed = 0
@@ -665,8 +640,8 @@ def get_affiliate_stats(self) -> List[Dict]:
         """Add premium user (admin command) to PostgreSQL."""
         conn = self.get_db_connection()
         try:
+            end_date = (datetime.now() + timedelta(days=days)).strftime('%Y-%m-%d')
             with conn.cursor() as cursor:
-                end_date = (datetime.now() + timedelta(days=days)).strftime('%Y-%m-%d')
                 cursor.execute('''
                     INSERT INTO premium_users 
                     (user_id, username, subscription_end)
@@ -683,13 +658,13 @@ def get_affiliate_stats(self) -> List[Dict]:
             logger.error(f"Error adding premium user: {e}")
             conn.rollback()
 
-    async def create_affiliate_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    async def create_affiliate_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if update.effective_user.id != ADMIN_USER_ID:
             await update.message.reply_text("❌ Access denied. Admin only command.")
             return
     
         influencer_name = ' '.join(context.args) if context.args else update.effective_user.username
-        code = bot.create_affiliate_link(update.effective_user.id, influencer_name)
+        code = self.create_affiliate_link(update.effective_user.id, influencer_name)
     
         if code:
             await update.message.reply_text(
@@ -700,12 +675,12 @@ def get_affiliate_stats(self) -> List[Dict]:
         else:
             await update.message.reply_text("❌ Error creating affiliate link.")
 
-    async def affiliate_stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    async def affiliate_stats_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if update.effective_user.id != ADMIN_USER_ID:
             await update.message.reply_text("❌ Access denied. Admin only command.")
             return
     
-        stats = bot.get_affiliate_stats()
+        stats = self.get_affiliate_stats()
     
         if not stats:
             await update.message.reply_text("No affiliate data available.")
@@ -737,41 +712,15 @@ def get_affiliate_stats(self) -> List[Dict]:
     
     def normalize_symbol(self, symbol: str, exchange: str) -> str:
         """Normalize symbol format across exchanges"""
-        # Remove common separators and convert to standard format
         normalized = symbol.upper().replace('/', '').replace('-', '').replace('_', '')
         
-        # Handle exchange-specific prefixes
         if exchange == 'bitfinex' and normalized.startswith('T'):
-            normalized = normalized[1:]  # Remove 't' prefix
+            normalized = normalized[1:]
         
-        # Handle specific mappings
         if symbol in self.symbol_mapping:
             normalized = self.symbol_mapping[symbol]
         
         return normalized
-    
-    async def fetch_prices_with_volume(self, exchange: str) -> Dict[str, Dict]:
-        """Fetch prices and volumes from exchange"""
-        async with self.request_semaphore: # This semaphore is correctly used here
-            try:
-                session = await self.get_session() # Use the shared session
-                url = self.exchanges[exchange]
-                
-                headers = {
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-                }
-                
-                async with session.get(url, headers=headers) as response:
-                    if response.status != 200:
-                        logger.warning(f"{exchange} returned status {response.status}")
-                        return {}
-                    
-                    data = await response.json()
-                    return self.parse_exchange_data(exchange, data)
-                    
-            except Exception as e:
-                logger.error(f"{exchange} price/volume error: {str(e)}")
-                return {}
     
     def parse_exchange_data(self, exchange: str, data) -> Dict[str, Dict]:
         """Parse exchange-specific data format"""
@@ -907,43 +856,15 @@ def get_affiliate_stats(self) -> List[Dict]:
                             }
                 return result
             
-            # Add more exchange parsers as needed...
-            
         except Exception as e:
             logger.error(f"Error parsing {exchange} data: {str(e)}")
         
         return {}
 
-    async def get_cached_arbitrage_data(self, is_premium: bool = False):
-        """Cache'den veri döndür, gerekirse yenile"""
-        current_time = time.time()
-    
-        with self.cache_lock:
-            # Cache geçerli mi kontrol et
-            if (current_time - self.cache_timestamp) < self.cache_duration and self.cache_data:
-                logger.info("Returning cached data")
-                return self.calculate_arbitrage(self.cache_data, is_premium)
-        
-            # Eğer başka bir request zaten fetch yapıyorsa bekle
-            if self.is_fetching:
-                # Son cache'i döndür (varsa)
-                if self.cache_data:
-                    logger.info("Fetch in progress, returning last cached data")
-                    return self.calculate_arbitrage(self.cache_data, is_premium)
-        
-            # Minimum fetch interval kontrolü
-            if (current_time - self.last_fetch_time) < self.min_fetch_interval:
-                if self.cache_data:
-                    logger.info("Rate limit protection, returning cached data")
-                    return self.calculate_arbitrage(self.cache_data, is_premium)
-    
-        # Yeni veri fetch et
-        return await self._fetch_fresh_data(is_premium)
-
     async def _fetch_fresh_data(self, is_premium: bool):
-        """Yeni veri çek ve cache'le"""
+        """Fetch fresh data and cache it"""
         with self.cache_lock:
-            if self.is_fetching:  # Double-check locking
+            if self.is_fetching:
                 if self.cache_data:
                     return self.calculate_arbitrage(self.cache_data, is_premium)
         
@@ -987,17 +908,15 @@ def get_affiliate_stats(self) -> List[Dict]:
         """
         normalized_symbol_to_find = self.normalize_symbol(symbol_to_find, "general")
         
-        # Fetch data from all exchanges
         all_exchange_data = await self.get_all_prices_with_volume()
         
         found_prices = []
         for exchange_name, data_for_exchange in all_exchange_data.items():
             if normalized_symbol_to_find in data_for_exchange:
                 price = data_for_exchange[normalized_symbol_to_find]['price']
-                if price > 0: # Only include valid prices
+                if price > 0:
                     found_prices.append((exchange_name, price))
         
-        # Sort by price (cheapest to most expensive)
         found_prices.sort(key=lambda x: x[1])
         return found_prices
     
@@ -1007,12 +926,10 @@ def get_affiliate_stats(self) -> List[Dict]:
         logger.info(f"Checking safety for symbol: {symbol}")
         logger.info(f"Exchange data for {symbol}: {exchange_data}")
 
-        # 1. Trusted symbols list
         if symbol in self.trusted_symbols:
             logger.info(f"{symbol} is a trusted symbol.")
             return (True, "✅ Trusted symbol with verified history and high liquidity.")
         
-        # 2. Extract volumes and filter non-zero
         volumes = [data.get('volume', 0) for data in exchange_data.values()]
         non_zero_volumes = [v for v in volumes if v > 0]
         logger.info(f"Non-zero volumes for {symbol}: {non_zero_volumes}")
@@ -1025,21 +942,19 @@ def get_affiliate_stats(self) -> List[Dict]:
         exchanges_with_sufficient_volume = sum(1 for v in non_zero_volumes if v >= self.min_volume_threshold)
         logger.info(f"Total volume for {symbol}: ${total_volume:,.0f}, Exchanges with sufficient volume: {exchanges_with_sufficient_volume}")
         
-        # 3. Suspicious symbol check
         base_symbol = symbol.replace('USDT', '').replace('USDC', '').replace('BUSD', '')
         is_suspicious_name = any(suspicious in base_symbol.upper() for suspicious in self.suspicious_symbols)
         logger.info(f"Is {symbol} a suspicious name? {is_suspicious_name}")
 
         if is_suspicious_name:
-            if total_volume > self.min_volume_threshold * 5 and exchanges_with_sufficient_volume >= 3: # Require more exchanges for suspicious names
+            if total_volume > self.min_volume_threshold * 5 and exchanges_with_sufficient_volume >= 3:
                 logger.info(f"Suspicious symbol {symbol} deemed safe due to high volume and sufficient exchanges.")
                 return (True, f"🔍 Symbol has a suspicious name, but is deemed safe due to high total volume (${total_volume:,.0f}) and presence on {exchanges_with_sufficient_volume} major exchanges.")
             else:
                 logger.warning(f"Suspicious symbol {symbol} deemed unsafe. Total volume: ${total_volume:,.0f}, Exchanges with sufficient volume: {exchanges_with_sufficient_volume}.")
                 return (False, f"❌ Symbol has a suspicious name. Total volume (${total_volume:,.0f}) is insufficient or not present on enough major exchanges ({exchanges_with_sufficient_volume} of minimum 3 needed for suspicious symbols).")
 
-        # 4. General safety checks for non-trusted, non-suspicious symbols
-        if total_volume < self.min_volume_threshold * 2: # Require higher total volume for non-trusted symbols
+        if total_volume < self.min_volume_threshold * 2:
             logger.warning(f"Total volume for {symbol} (${total_volume:,.0f}) is below the required threshold (${self.min_volume_threshold * 2:,.0f}).")
             return (False, f"❌ Total volume (${total_volume:,.0f}) is below the required threshold (${self.min_volume_threshold * 2:,.0f}).")
         
@@ -1047,11 +962,10 @@ def get_affiliate_stats(self) -> List[Dict]:
             logger.warning(f"{symbol} found on only {exchanges_with_sufficient_volume} exchange(s) with sufficient volume (minimum 2 required).")
             return (False, f"❌ Found on only {exchanges_with_sufficient_volume} exchange(s) with sufficient volume (minimum 2 required).")
 
-        # 5. Volume differences too large? (one exchange very high, another very low)
         if len(non_zero_volumes) >= 2:
             max_vol = max(non_zero_volumes)
             min_vol = min(non_zero_volumes)
-            if min_vol > 0 and max_vol > min_vol * 100:  # 100x difference is suspicious
+            if min_vol > 0 and max_vol > min_vol * 100:
                 logger.warning(f"Significant volume discrepancy detected for {symbol}. Max volume (${max_vol:,.0f}) is more than 100x minimum volume (${min_vol:,.0f}).")
                 return (False, f"❌ Significant volume discrepancy detected. Max volume (${max_vol:,.0f}) is more than 100x minimum volume (${min_vol:,.0f}), indicating potential liquidity issues or data anomalies.")
 
@@ -1061,18 +975,15 @@ def get_affiliate_stats(self) -> List[Dict]:
     def validate_arbitrage_opportunity(self, opportunity: Dict) -> bool:
         """Validate if arbitrage opportunity is real"""
         
-        # 1. Profit ratio too high?
         if opportunity['profit_percent'] > self.max_profit_threshold:
             logger.warning(f"Suspicious high profit: {opportunity['symbol']} - {opportunity['profit_percent']:.2f}%")
             return False
         
-        # 2. Price difference reasonable?
         price_ratio = opportunity['sell_price'] / opportunity['buy_price']
-        if price_ratio > 1.3:  # More than 30% difference is suspicious
+        if price_ratio > 1.3:
             return False
         
-        # 3. Minimum profit threshold
-        if opportunity['profit_percent'] < 0.1:  # Less than 0.1% profit is meaningless
+        if opportunity['profit_percent'] < 0.1:
             return False
         
         return True
@@ -1081,13 +992,11 @@ def get_affiliate_stats(self) -> List[Dict]:
         """Enhanced arbitrage calculation"""
         opportunities = []
         
-        # Find common symbols across exchanges
         all_symbols = set()
         for exchange_data in all_data.values():
             if exchange_data:
                 all_symbols.update(exchange_data.keys())
         
-        # Filter symbols that appear in at least 2 exchanges
         common_symbols = set()
         for symbol in all_symbols:
             exchanges_with_symbol = sum(1 for exchange_data in all_data.values() if symbol in exchange_data)
@@ -1097,16 +1006,13 @@ def get_affiliate_stats(self) -> List[Dict]:
         logger.info(f"Found {len(common_symbols)} common symbols")
         
         for symbol in common_symbols:
-            # Collect all exchange data for this symbol
             exchange_data = {ex: all_data[ex][symbol] for ex in all_data if symbol in all_data[ex]}
             
-            # Safety check
-            is_safe, _ = self.is_symbol_safe(symbol, exchange_data) # Only check boolean here for arbitrage calculation
+            is_safe, _ = self.is_symbol_safe(symbol, exchange_data)
             if not is_safe:
                 continue
             
             if len(exchange_data) >= 2:
-                # Sort by price
                 sorted_exchanges = sorted(exchange_data.items(), key=lambda x: x[1]['price'])
                 lowest_ex, lowest_data = sorted_exchanges[0]
                 highest_ex, highest_data = sorted_exchanges[-1]
@@ -1130,7 +1036,6 @@ def get_affiliate_stats(self) -> List[Dict]:
                     }
                     
                     if self.validate_arbitrage_opportunity(opportunity):
-                        # For free users, only show opportunities up to 2%
                         if not is_premium and opportunity['profit_percent'] > self.free_user_max_profit:
                             continue
                         opportunities.append(opportunity)
@@ -1220,14 +1125,13 @@ def get_affiliate_stats(self) -> List[Dict]:
 bot = ArbitrageBot()
 
 # Admin user ID - set your Telegram user ID here
-ADMIN_USER_ID = int(os.getenv("ADMIN_USER_ID", "0"))  # Replace with your user ID
+ADMIN_USER_ID = int(os.getenv("ADMIN_USER_ID", "0"))
 
 # Command Handlers
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     bot.save_user(user.id, user.username or "")
     
-    # Check for affiliate link
     if context.args and context.args[0].startswith('ref-'):
         affiliate_code = context.args[0]
         bot.track_affiliate_user(user.id, affiliate_code)
@@ -1277,13 +1181,11 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif query.data == 'activate_license':
         await show_license_activation(query)
     elif query.data == 'send_message' and query.from_user.id == ADMIN_USER_ID:
-        await show_send_message_options(query)
+        await bot.show_send_message_options(query)
 
 async def handle_arbitrage_check(query):
-    # Yüklenme mesajını göster
     await query.edit_message_text("🔄 Scanning prices across exchanges... (Security filters active)")
     
-    # 3 saniye bekle
     await asyncio.sleep(3)
     
     user_id = query.from_user.id
@@ -1306,7 +1208,6 @@ async def handle_arbitrage_check(query):
     
     max_opps = 20 if is_premium else 8
     for i, opp in enumerate(opportunities[:max_opps], 1):
-        # Trusted coin indicator
         trust_icon = "✅" if opp['symbol'] in bot.trusted_symbols else "🔍"
         
         text += f"{i}. {trust_icon} {opp['symbol']}\n"
@@ -1315,7 +1216,6 @@ async def handle_arbitrage_check(query):
         text += f"   💰 Profit: {opp['profit_percent']:.2f}%\n"
         text += f"   📊 Volume: ${opp['avg_volume']:,.0f}\n\n"
         
-        # Save data for premium users
         if is_premium:
             bot.save_arbitrage_data(opp)
     
@@ -1343,7 +1243,6 @@ async def show_trusted_symbols(query):
     symbols_list = list(bot.trusted_symbols)
     symbols_list.sort()
     
-    # Group symbols for better display
     for i in range(0, len(symbols_list), 3):
         group = symbols_list[i:i+3]
         text += " • ".join(group) + "\n"
@@ -1402,28 +1301,23 @@ async def handle_license_activation(update: Update, context: ContextTypes.DEFAUL
     user = update.effective_user
     license_key = update.message.text.strip()
     
-    # Debug: License key formatını kontrol et
     logger.info(f"Received license key from user {user.id}: '{license_key}'")
     logger.info(f"License key length: {len(license_key)}")
     
-    # License key format kontrolü (Gumroad format: XXXXXXXX-XXXXXXXX-XXXXXXXX-XXXXXXXX)
     if not license_key or len(license_key) < 10:
         logger.info("License key too short, ignoring")
-        return  # Not a license key, ignore
+        return
     
-    # Daha detaylı format kontrolü
     if not any(c.isalnum() for c in license_key):
         logger.info("License key contains no alphanumeric characters, ignoring")
         return
     
     await update.message.reply_text("🔄 Verifying license key...")
     
-    # Check if already used
     if license_key in bot.used_license_keys:
         await update.message.reply_text("❌ This license key has already been used.")
         return
     
-    # Verify with Gumroad
     verification_result = await bot.verify_gumroad_license(license_key)
     
     logger.info(f"Verification result: {verification_result}")
@@ -1441,7 +1335,6 @@ async def handle_license_activation(update: Update, context: ContextTypes.DEFAUL
         )
         return
     
-    # Activate license
     bot.activate_license_key(
         license_key, 
         user.id, 
@@ -1514,12 +1407,12 @@ async def show_premium_info(query):
             [InlineKeyboardButton("💎 Buy Premium", url=GUMROAD_LINK)],
             [InlineKeyboardButton("🔑 Activate License", callback_data='activate_license')],
             [InlineKeyboardButton("🔙 Back", callback_data='back')]
-    ]
+        ]
     
     await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
 
 async def start_background_tasks(app):
-    """Background task'ları başlat"""
+    """Start background tasks"""
     asyncio.create_task(bot.cache_refresh_task())
 
 async def show_help(query):
@@ -1592,7 +1485,7 @@ async def list_premium_users(query):
         text = "📋 **Premium Users List**\n\nNo premium users found."
     else:
         text = f"📋 **Premium Users List** ({len(users)} users)\n\n"
-        for i, user in enumerate(users[:20], 1):  # Show max 20 users
+        for i, user in enumerate(users[:20], 1):
             text += f"{i}. **{user['username']}** (ID: {user['user_id']})\n"
             text += f"   └ Until: {user['subscription_end']}\n"
     
@@ -1621,14 +1514,12 @@ async def remove_premium_command(update: Update, context: ContextTypes.DEFAULT_T
         user_input = context.args[0]
         
         if user_input.isdigit():
-            # User ID
             user_id = int(user_input)
             bot.remove_premium_user(user_id)
             await update.message.reply_text(f"✅ User {user_id} removed from premium.")
         else:
-            # Username
             username = user_input.replace('@', '')
-            user_id = await get_user_id_by_username(username)
+            user_id = bot.get_user_id_by_username(username)
             
             if user_id:
                 bot.remove_premium_user(user_id)
@@ -1642,7 +1533,6 @@ async def remove_premium_command(update: Update, context: ContextTypes.DEFAULT_T
         await update.message.reply_text(f"❌ Error: {str(e)}")
 
 async def create_affiliate_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Create an affiliate link for influencers"""
     if update.effective_user.id != ADMIN_USER_ID:
         await update.message.reply_text("❌ Access denied. Admin only command.")
         return
@@ -1660,7 +1550,6 @@ async def create_affiliate_command(update: Update, context: ContextTypes.DEFAULT
         await update.message.reply_text("❌ Error creating affiliate link.")
 
 async def affiliate_stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Show affiliate statistics"""
     if update.effective_user.id != ADMIN_USER_ID:
         await update.message.reply_text("❌ Access denied. Admin only command.")
         return
@@ -1684,7 +1573,6 @@ async def affiliate_stats_command(update: Update, context: ContextTypes.DEFAULT_
     
     await update.message.reply_text(text)
 
-
 async def add_premium_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_USER_ID:
         await update.message.reply_text("❌ Access denied. Admin only command.")
@@ -1703,16 +1591,13 @@ async def add_premium_command(update: Update, context: ContextTypes.DEFAULT_TYPE
         user_input = context.args[0]
         days = int(context.args[1]) if len(context.args) > 1 else 30
         
-        # Kullanıcı ID mi username mi kontrol et
         if user_input.isdigit():
-            # User ID
             user_id = int(user_input)
             bot.add_premium_user(user_id, "", days)
             await update.message.reply_text(f"✅ User {user_id} added as premium for {days} days.")
         else:
-            # Username
-            username = user_input.replace('@', '')  # @ işaretini kaldır
-            user_id = await get_user_id_by_username(username)
+            username = user_input.replace('@', '')
+            user_id = bot.get_user_id_by_username(username)
             
             if user_id:
                 bot.add_premium_user(user_id, username, days)
@@ -1724,10 +1609,6 @@ async def add_premium_command(update: Update, context: ContextTypes.DEFAULT_TYPE
         await update.message.reply_text("❌ Invalid days parameter. Use numbers only for days.")
     except Exception as e:
         await update.message.reply_text(f"❌ Error: {str(e)}")
-
-async def get_user_id_by_username(username: str) -> int:
-    """Get user ID by username from PostgreSQL database"""
-    return bot.get_user_id_by_username(username)
 
 async def list_premium_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_USER_ID:
@@ -1756,25 +1637,20 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     try:
-        # Her sorgu için ayrı bağlantı kullan
         conn = bot.get_db_connection()
         
-        # Total users
         with conn.cursor() as cursor:
             cursor.execute('SELECT COUNT(*) FROM users')
             total_users = cursor.fetchone()[0]
         
-        # Premium users
         with conn.cursor() as cursor:
             cursor.execute('SELECT COUNT(*) FROM premium_users')
             premium_users = cursor.fetchone()[0]
         
-        # Arbitrage data
         with conn.cursor() as cursor:
             cursor.execute('SELECT COUNT(*) FROM arbitrage_data')
             total_arbitrage_records = cursor.fetchone()[0]
         
-        # Top users
         with conn.cursor() as cursor:
             cursor.execute('''
                 SELECT user_id, COUNT(*) as activity_count 
@@ -1785,7 +1661,6 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ''')
             top_users = cursor.fetchall()
         
-        # Recent premium
         with conn.cursor() as cursor:
             cursor.execute('''
                 SELECT user_id, username, added_date 
@@ -1795,7 +1670,6 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ''')
             recent_premium = cursor.fetchall()
         
-        # Affiliate stats
         affiliate_stats = bot.get_affiliate_stats()
         
         text = f"""📊 **Advanced Bot Statistics**
@@ -1821,7 +1695,7 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         if affiliate_stats:
             text += "\n\n🤝 **Affiliate Stats:**"
-            for stat in affiliate_stats[:3]:  # Show top 3
+            for stat in affiliate_stats[:3]:
                 rate = (stat['premium_conversions']/stat['total_uses']*100) if stat['total_uses'] > 0 else 0
                 text += f"\n• {stat['name']}: {stat['total_uses']} refs, {stat['premium_conversions']} conv ({rate:.1f}%)"
         
@@ -1835,7 +1709,6 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             conn.close()
 
 async def admin_check_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Sadece adminler için Huobi hariç ve %40 limitli arbitraj kontrolü"""
     if update.effective_user.id != ADMIN_USER_ID:
         await update.message.reply_text("❌ Access denied. Admin only command.")
         return
@@ -1855,7 +1728,7 @@ async def admin_check_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     
     text = "💎 **Admin Arbitrage (Huobi Excluded, Max 40% Profit)**\n\n"
     
-    for i, opp in enumerate(opportunities[:20], 1):  # Max 20 fırsat göster
+    for i, opp in enumerate(opportunities[:20], 1):
         trust_icon = "✅" if opp['symbol'] in bot.trusted_symbols else "🔍"
         text += f"{i}. {trust_icon} {opp['symbol']}\n"
         text += f"   ⬇️ Buy: {opp['buy_exchange']} ${opp['buy_price']:.6f}\n"
@@ -1863,7 +1736,6 @@ async def admin_check_command(update: Update, context: ContextTypes.DEFAULT_TYPE
         text += f"   💰 Profit: {opp['profit_percent']:.2f}%\n"
         text += f"   📊 Volume: ${opp['avg_volume']:,.0f}\n\n"
         
-        # Veriyi kaydet
         bot.save_arbitrage_data(opp)
     
     await msg.edit_text(text)
@@ -1894,17 +1766,14 @@ async def price_check_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     msg = await update.message.reply_text(f"🔄 Fetching data and analyzing safety for **{symbol_to_check}**...")
 
     try:
-        # Fetch all exchange data first
         all_exchange_data = await bot.get_all_prices_with_volume()
 
-        # Extract data for the specific symbol across all exchanges for safety check
         symbol_specific_exchange_data = {}
         for exchange_name, data_for_exchange in all_exchange_data.items():
             normalized_symbol = bot.normalize_symbol(symbol_to_check, exchange_name)
             if normalized_symbol in data_for_exchange:
                 symbol_specific_exchange_data[exchange_name] = data_for_exchange[normalized_symbol]
 
-        # Perform security filter check using the extracted symbol-specific data
         is_safe, safety_reason = bot.is_symbol_safe(symbol_to_check, symbol_specific_exchange_data)
 
         safety_text = f"🛡️ **Security Check for {symbol_to_check}:**\n{safety_reason}\n\n"
@@ -1913,11 +1782,10 @@ async def price_check_command(update: Update, context: ContextTypes.DEFAULT_TYPE
             await msg.edit_text(f"❌ Security check failed for **{symbol_to_check}**.\n\n{safety_text}")
             return
 
-        # If safe, proceed to fetch and display prices
         found_prices = []
         for exchange_name, data_for_exchange in symbol_specific_exchange_data.items():
             price = data_for_exchange['price']
-            if price > 0: # Only include valid prices
+            if price > 0:
                 found_prices.append((exchange_name, price))
         
         if not found_prices:
@@ -1926,12 +1794,10 @@ async def price_check_command(update: Update, context: ContextTypes.DEFAULT_TYPE
 
         text = f"📈 **{symbol_to_check} Prices Across Exchanges**\n\n"
         
-        # Display prices from cheapest to most expensive
-        found_prices.sort(key=lambda x: x[1]) # Re-sort to ensure cheapest-to-expensive order
+        found_prices.sort(key=lambda x: x[1])
         for exchange, price in found_prices:
             text += f"• {exchange.capitalize()}: `${price:.6f}`\n"
         
-        # Calculate and display price difference
         cheapest_exchange, cheapest_price = found_prices[0]
         most_expensive_exchange, most_expensive_price = found_prices[-1]
         
@@ -1946,7 +1812,7 @@ async def price_check_command(update: Update, context: ContextTypes.DEFAULT_TYPE
         else:
              text += "\nCould not calculate percentage difference (cheapest price is zero).\n\n"
 
-        text += safety_text # Add safety text at the end
+        text += safety_text
 
         await msg.edit_text(text)
 
@@ -1955,14 +1821,12 @@ async def price_check_command(update: Update, context: ContextTypes.DEFAULT_TYPE
         await msg.edit_text(f"❌ An error occurred while fetching prices for **{symbol_to_check}**.")
 
 
-# Quick check command
 async def check_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     bot.save_user(user.id, user.username or "")
     
     msg = await update.message.reply_text("🔄 Scanning arbitrage opportunities...")
     
-    # 3 saniye bekle
     await asyncio.sleep(3)
     
     all_data = await bot.get_all_prices_with_volume()
@@ -1994,17 +1858,14 @@ def main():
         logger.error("TELEGRAM_BOT_TOKEN environment variable not found!")
         return
     
-    # Set admin user ID from environment
     global ADMIN_USER_ID
     ADMIN_USER_ID = int(os.getenv("ADMIN_USER_ID", "0"))
     
     if ADMIN_USER_ID == 0:
         logger.warning("ADMIN_USER_ID not set! Admin commands will not work.")
     
-    # Webhook'u devre dışı bırak
     app = Application.builder().token(TOKEN).post_init(start_background_tasks).build()
     
-    # Command handlers
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("check", check_command))
     app.add_handler(CommandHandler("addpremium", add_premium_command))
@@ -2014,14 +1875,11 @@ def main():
     app.add_handler(CommandHandler("admincheck", admin_check_command))
     app.add_handler(CommandHandler("price", price_check_command))
     
-    # Yeni affiliate komutları
     app.add_handler(CommandHandler("createaffiliate", create_affiliate_command))
     app.add_handler(CommandHandler("affiliatestats", affiliate_stats_command))
     
-    # Message handlers (command handlers'dan sonra)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_license_activation))
     
-    # Callback handlers
     app.add_handler(CallbackQueryHandler(button_handler))
 
     try:
