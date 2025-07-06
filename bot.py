@@ -248,6 +248,23 @@ class ArbitrageBot:
             if conn:
                 conn.close()
 
+    def save_user(self, user_id: int, username: str):
+        """Save user to PostgreSQL database."""
+        conn = self.get_db_connection()
+        try:
+            with conn.cursor() as cursor:
+                cursor.execute('''
+                    INSERT INTO users (user_id, username)
+                    VALUES (%s, %s)
+                    ON CONFLICT (user_id) DO UPDATE SET 
+                        username = EXCLUDED.username,
+                        added_date = CURRENT_TIMESTAMP
+                ''', (user_id, username))
+            conn.commit()
+        except Exception as e:
+            logger.error(f"Error saving user: {e}")
+            conn.rollback()
+
     def recreate_affiliates_table():
         conn = bot.get_db_connection()
         try:
