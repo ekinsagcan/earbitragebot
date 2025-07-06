@@ -1970,6 +1970,42 @@ async def admin_check_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     
     await msg.edit_text(text)
 
+async def handle_create_affiliate(query):
+    """Handle create affiliate button click"""
+    try:
+        # Burada mevcut create_affiliate_command fonksiyonunu çağırabiliriz
+        await create_affiliate_command(query)
+    except Exception as e:
+        logger.error(f"Error in handle_create_affiliate: {e}")
+        await query.edit_message_text("❌ Error creating affiliate link.")
+
+async def handle_affiliate_stats(query):
+    """Handle affiliate stats button click"""
+    try:
+        stats = bot.get_affiliate_stats()
+        
+        if not stats:
+            await query.edit_message_text("No affiliate data available.")
+            return
+        
+        text = "📊 **Affiliate Statistics**\n\n"
+        for stat in stats:
+            conversion_rate = (stat['premium_conversions'] / stat['total_uses'] * 100) if stat['total_uses'] > 0 else 0
+            text += (
+                f"👤 Influencer: {stat['name']}\n"
+                f"🔗 Code: {stat['code']}\n"
+                f"👥 Total Referrals: {stat['total_uses']}\n"
+                f"💎 Premium Conversions: {stat['premium_conversions']}\n"
+                f"📈 Conversion Rate: {conversion_rate:.1f}%\n\n"
+            )
+        
+        keyboard = [[InlineKeyboardButton("🔙 Back", callback_data='affiliate_mgmt')]]
+        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+        
+    except Exception as e:
+        logger.error(f"Error in handle_affiliate_stats: {e}")
+        await query.edit_message_text("❌ Error loading affiliate stats.")
+
 async def price_check_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     user_id = user.id
