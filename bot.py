@@ -411,7 +411,7 @@ class ArbitrageBot:
                 conn.close()
             self.conn = None  # Bağlantıyı temizle
                 
-                cursor.execute('''
+            cursor.execute('''
                     CREATE TABLE IF NOT EXISTS arbitrage_data (
                         id SERIAL PRIMARY KEY,
                         symbol TEXT,
