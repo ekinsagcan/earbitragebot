@@ -1302,7 +1302,8 @@ async def show_admin_panel(query):
     
 📊 **Statistics:**
 • Total premium users: {}
-• Total exchanges: {}
+• Total free users: {}
+• Total users: {}
 • Trusted symbols: {}
 
 🛠️ **Available Commands:**
@@ -1310,16 +1311,19 @@ async def show_admin_panel(query):
 • /removepremium <user_id> - Remove premium user
 • /listpremium - List all premium users
 • /stats - Bot statistics
-• /admincheck - Admin arbitrage check (Huobi excluded, 40% max profit)
+• /admincheck - Admin arbitrage check
+• /broadcast - Send message to users
 
-📋 **Quick Actions:**""".format(
+📋 **Quick Actions:""".format(
         len(bot.premium_users), 
-        len(bot.exchanges), 
+        len(bot.get_free_users()),
+        len(bot.get_all_users()),
         len(bot.trusted_symbols)
     )
     
     keyboard = [
         [InlineKeyboardButton("📋 List Premium Users", callback_data='list_premium')],
+        [InlineKeyboardButton("📩 Send Message to Users", callback_data='send_message')],
         [InlineKeyboardButton("🔙 Main Menu", callback_data='back')]
     ]
     
