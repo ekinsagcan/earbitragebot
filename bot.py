@@ -396,90 +396,92 @@ class ArbitrageBot:
                 return {}
 
     def init_database(self):
-        """Initialize PostgreSQL database tables."""
-        conn = None
-        try:
-            conn = self.get_db_connection()
-            with conn.cursor() as cursor:
-                # Create users table
-                cursor.execute('''
-                    CREATE TABLE IF NOT EXISTS users (
-                        user_id BIGINT PRIMARY KEY,
-                        username TEXT,
-                        added_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                        last_active TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                    )
-                ''')
-            
-                # Create arbitrage_data table
-                cursor.execute('''
-                    CREATE TABLE IF NOT EXISTS arbitrage_data (
-                        id SERIAL PRIMARY KEY,
-                        symbol TEXT,
-                        exchange1 TEXT,
-                        exchange2 TEXT,
-                        price1 REAL,
-                        price2 REAL,
-                        profit_percent REAL,
-                        volume_24h REAL,
-                        timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                        user_id BIGINT REFERENCES users(user_id)
-                ''')
-            
-                # Create premium_users table
-                cursor.execute('''
-                    CREATE TABLE IF NOT EXISTS premium_users (
-                        user_id BIGINT PRIMARY KEY REFERENCES users(user_id),
-                        username TEXT,
-                        added_by_admin BOOLEAN DEFAULT TRUE,
-                        added_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                        subscription_end DATE
-                    )
-                ''')
-            
-                # Create license_keys table
-                cursor.execute('''
-                    CREATE TABLE IF NOT EXISTS license_keys (
-                        license_key TEXT PRIMARY KEY,
-                        user_id BIGINT REFERENCES users(user_id),
-                        username TEXT,
-                        used_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                        gumroad_sale_id TEXT
-                    )
-                ''')
-            
-                # Create affiliates table
-                cursor.execute('''
-                    CREATE TABLE IF NOT EXISTS affiliates (
-                        affiliate_code TEXT PRIMARY KEY,
-                        influencer_id BIGINT,
-                        influencer_name TEXT,
-                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                        uses INT DEFAULT 0
-                    )
-                ''')
-            
-                # Create affiliate_users table
-                cursor.execute('''
-                    CREATE TABLE IF NOT EXISTS affiliate_users (
-                        user_id BIGINT REFERENCES users(user_id),
-                        affiliate_code TEXT REFERENCES affiliates(affiliate_code),
-                        joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                        PRIMARY KEY (user_id, affiliate_code)
-                    )
-                ''')
-            
-                conn.commit()
-                logger.info("Database tables created successfully")
-            
-        except Exception as e:
-            logger.error(f"Error initializing database: {e}")
-            if conn:
-                conn.rollback()
-            raise
-        finally:
-            if conn:
-                conn.close()
+    """Initialize PostgreSQL database tables."""
+    conn = None
+    try:
+        conn = self.get_db_connection()
+        with conn.cursor() as cursor:
+            # Create users table
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS users (
+                    user_id BIGINT PRIMARY KEY,
+                    username TEXT,
+                    added_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    last_active TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+
+            # Create arbitrage_data table
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS arbitrage_data (
+                    id SERIAL PRIMARY KEY,
+                    symbol TEXT,
+                    exchange1 TEXT,
+                    exchange2 TEXT,
+                    price1 REAL,
+                    price2 REAL,
+                    profit_percent REAL,
+                    volume_24h REAL,
+                    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    user_id BIGINT REFERENCES users(user_id)
+                )
+            ''')
+
+            # Create premium_users table
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS premium_users (
+                    user_id BIGINT PRIMARY KEY REFERENCES users(user_id),
+                    username TEXT,
+                    added_by_admin BOOLEAN DEFAULT TRUE,
+                    added_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    subscription_end DATE
+                )
+            ''')
+
+            # Create license_keys table
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS license_keys (
+                    license_key TEXT PRIMARY KEY,
+                    user_id BIGINT REFERENCES users(user_id),
+                    username TEXT,
+                    used_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    gumroad_sale_id TEXT
+                )
+            ''')
+
+            # Create affiliates table
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS affiliates (
+                    affiliate_code TEXT PRIMARY KEY,
+                    influencer_id BIGINT,
+                    influencer_name TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    uses INT DEFAULT 0
+                )
+            ''')
+
+            # Create affiliate_users table
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS affiliate_users (
+                    user_id BIGINT REFERENCES users(user_id),
+                    affiliate_code TEXT REFERENCES affiliates(affiliate_code),
+                    joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (user_id, affiliate_code)
+                )
+            ''')
+
+            conn.commit()
+            logger.info("Database tables created successfully")
+
+    except Exception as e:
+        logger.error(f"Error initializing database: {e}")
+        if conn:
+            conn.rollback()
+        raise
+    finally:
+        if conn:
+            conn.close()
+
 
     async def cache_refresh_task(self):
         """Refresh cache every 25 seconds"""
