@@ -9,7 +9,7 @@ import psycopg2
 from urllib.parse import urlparse
 import time
 from threading import Lock
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, error # Import error for TelegramError
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, error
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -815,26 +815,26 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     bot.save_user(user_id, username, referred_by)
 
     is_premium = bot.is_premium(user_id)
-    status_text = "💎 Premium Kullanıcı" if is_premium else "🆓 Ücretsiz Kullanıcı"
+    status_text = "💎 Premium User" if is_premium else "🆓 Free User"
     expiry_text = ""
     if is_premium and bot.premium_users.get(user_id):
-        expiry_text = f" (Sona Erme Tarihi: {bot.premium_users[user_id].strftime('%d.%m.%Y %H:%M')})"
+        expiry_text = f" (Expires: {bot.premium_users[user_id].strftime('%d.%m.%Y %H:%M')})"
 
     keyboard = [
-        [InlineKeyboardButton("🔍 Arbitraj Ara", callback_data="check_arbitrage")],
-        [InlineKeyboardButton("📊 Güvenilir Coinler", callback_data="trusted_coins")],
-        [InlineKeyboardButton("💎 Premium Bilgi", callback_data="premium_info"),
-         InlineKeyboardButton("🔑 Lisans Aktifleştir", callback_data="activate_license")],
-        [InlineKeyboardButton("ℹ️ Yardım", callback_data="help")],
+        [InlineKeyboardButton("🔍 Find Arbitrage", callback_data="check_arbitrage")],
+        [InlineKeyboardButton("📊 Trusted Coins", callback_data="trusted_coins")],
+        [InlineKeyboardButton("💎 Premium Info", callback_data="premium_info"),
+         InlineKeyboardButton("🔑 Activate License", callback_data="activate_license")],
+        [InlineKeyboardButton("ℹ️ Help", callback_data="help")],
     ]
     if str(user_id) == ADMIN_USER_ID:
-        keyboard.append([InlineKeyboardButton("👑 Admin Paneli", callback_data="admin_panel")])
+        keyboard.append([InlineKeyboardButton("👑 Admin Panel", callback_data="admin_panel")])
 
     reply_markup = InlineKeyboardMarkup(keyboard)
     await update.message.reply_text(
-        f"Merhaba {username}!\n\nBotumuzla kripto para arbitraj fırsatlarını keşfedin.\n"
-        f"Hesap Durumunuz: {status_text}{expiry_text}\n\n"
-        "Aşağıdaki seçeneklerden birini seçin:",
+        f"Hello {username}!\n\nDiscover crypto arbitrage opportunities with our bot.\n"
+        f"Account Status: {status_text}{expiry_text}\n\n"
+        "Choose an option below:",
         reply_markup=reply_markup
     )
 
@@ -844,7 +844,7 @@ async def find_arbitrage_opportunities(update: Update, context: ContextTypes.DEF
     username = update.effective_user.username or f"user_{user_id}"
     update_user_last_check_time(user_id) # Update last check time
 
-    await context.bot.send_message(chat_id=user_id, text="Arbitraj fırsatları aranıyor... Lütfen bekleyin.")
+    await context.bot.send_message(chat_id=user_id, text="Searching for arbitrage opportunities... Please wait.")
 
     is_premium = bot.is_premium(user_id)
     is_admin = (str(user_id) == ADMIN_USER_ID)
@@ -855,7 +855,7 @@ async def find_arbitrage_opportunities(update: Update, context: ContextTypes.DEF
     max_profit_for_display = max_profit_display_admin if is_admin else max_profit_display_user
 
     if time.time() - bot.last_fetched_time > 30: # Data older than 30 seconds
-        await context.bot.send_message(chat_id=user_id, text="Piyasa verileri güncelleniyor, bu biraz zaman alabilir.")
+        await context.bot.send_message(chat_id=user_id, text="Market data is being updated, this might take a moment.")
         await bot.fetch_all_tickers()
 
     with bot.data_lock:
@@ -863,7 +863,7 @@ async def find_arbitrage_opportunities(update: Update, context: ContextTypes.DEF
         current_volume_data = bot.volume_data
 
     if not current_ticker_data:
-        await context.bot.send_message(chat_id=user_id, text="Şu anda piyasa verileri mevcut değil. Lütfen daha sonra tekrar deneyin.")
+        await context.bot.send_message(chat_id=user_id, text="No market data available right now. Please try again later.")
         return
 
     opportunities_found = []
@@ -923,9 +923,9 @@ async def find_arbitrage_opportunities(update: Update, context: ContextTypes.DEF
     opportunities_found.sort(key=lambda x: x['profit_percentage'], reverse=True)
 
     if not opportunities_found:
-        await context.bot.send_message(chat_id=user_id, text="Üzgünüm, şu anda kayda değer arbitraj fırsatı bulunamadı.")
+        await context.bot.send_message(chat_id=user_id, text="Sorry, no significant arbitrage opportunities found at the moment.")
     else:
-        message = "🚨 **Bulunan Arbitraj Fırsatları:** 🚨\n\n"
+        message = "🚨 **Arbitrage Opportunities Found:** 🚨\n\n"
         for i, opp in enumerate(opportunities_found[:max_opportunities]):
             if not is_premium and opp['profit_percentage'] > max_profit_for_display:
                 profit_display = f"{max_profit_for_display:.2f}%+" # Censor for free users
@@ -934,48 +934,48 @@ async def find_arbitrage_opportunities(update: Update, context: ContextTypes.DEF
 
             message += (
                 f"**{opp['symbol']}**\n"
-                f"📈 Kar: `{profit_display}`\n"
-                f"🟢 Al: `{opp['buy_price']:.8f}` ({opp['buy_exchange'].upper()})\n"
-                f"🔴 Sat: `{opp['sell_price']:.8f}` ({opp['sell_exchange'].upper()})\n"
-                f"💰 24s Hacim: `${opp['volume_usd']:.0f}`\n"
+                f"📈 Profit: `{profit_display}`\n"
+                f"🟢 Buy: `{opp['buy_price']:.8f}` ({opp['buy_exchange'].upper()})\n"
+                f"🔴 Sell: `{opp['sell_price']:.8f}` ({opp['sell_exchange'].upper()})\n"
+                f"💰 24h Volume: `${opp['volume_usd']:.0f}`\n"
                 f"------------------------------------\n"
             )
-        message += "\n*24s Hacim bilgisi, fırsatın gerçekleşebilirliğini gösterir."
+        message += "\n*24h Volume indicates the feasibility of the opportunity."
         if not is_premium:
-            message += "\n\n**Daha fazla ve yüksek karlı fırsatları görmek için Premium'a yükseltin!** 💎"
+            message += "\n\n**Upgrade to Premium to see more and higher profit opportunities!** 💎"
         await context.bot.send_message(chat_id=user_id, text=message, parse_mode='Markdown')
 
 async def send_trusted_coins_list(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    trusted_coins_text = "📊 **Güvenilir Coinler Listesi:** 📊\n\n"
+    trusted_coins_text = "📊 **List of Trusted Coins:** 📊\n\n"
     sorted_trusted = sorted(list(bot.trusted_symbols))
     for coin in sorted_trusted:
         trusted_coins_text += f"- `{coin}`\n"
-    trusted_coins_text += "\nBu coinler, botumuzun güvenlik filtreleri tarafından doğrulanmış yüksek hacimli ve güvenilir varlıklardır."
+    trusted_coins_text += "\nThese coins are high-volume and reliable assets verified by our bot's security filters."
     await update.callback_query.edit_message_text(trusted_coins_text, parse_mode='Markdown')
 
 async def send_premium_info(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     premium_info_text = (
-        "💎 **Premium Üyelik Avantajları:** 💎\n\n"
-        "- Sınırsız arbitraj fırsatı gösterimi\n"
-        "- Yüksek karlı fırsatlara tam erişim\n"
-        "- Tüm coinler için gelişmiş güvenlik analizleri\n"
-        "- `/price` komutu ile anlık fiyat sorgulama\n"
-        "- Öncelikli destek\n\n"
-        f"Şimdi Premium olun: [Buradan satın alın]({GUMROAD_LINK})\n"
-        f"Destek için: {SUPPORT_USERNAME}"
+        "💎 **Premium Membership Advantages:** 💎\n\n"
+        "- Unlimited arbitrage opportunity display\n"
+        "- Full access to high-profit opportunities\n"
+        "- Advanced security analysis for all coins\n"
+        "- Instant price query with `/price` command\n"
+        "- Priority support\n\n"
+        f"Get Premium now: [Buy Here]({GUMROAD_LINK})\n"
+        f"For support: {SUPPORT_USERNAME}"
     )
     await update.callback_query.edit_message_text(premium_info_text, parse_mode='Markdown', disable_web_page_preview=True)
 
 async def send_help_info(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     help_text = (
-        "ℹ️ **Yardım ve Kullanım Kılavuzu** ℹ️\n\n"
-        "**🔍 Arbitraj Ara:** Anlık kripto para arbitraj fırsatlarını tarar ve size sunar.\n"
-        "**📊 Güvenilir Coinler:** Güvenlik filtrelerimizden geçmiş, yüksek hacimli coinlerin listesini gösterir.\n"
-        "**💎 Premium Bilgi:** Premium üyeliğin avantajları hakkında bilgi verir.\n"
-        "**🔑 Lisans Aktifleştir:** Gumroad'dan aldığınız lisans anahtarını girerek premium üyeliğinizi başlatın.\n\n"
-        "**Premium Komutlar:**\n"
-        "- `/price <SEMBOL>`: Belirttiğiniz kripto paranın tüm borsalardaki güncel fiyatını ve güvenlik analizini gösterir. Örn: `/price BTCUSDT`\n\n"
-        "Herhangi bir sorunuz olursa lütfen destek ekibimizle iletişime geçin: "
+        "ℹ️ **Help and User Guide** ℹ️\n\n"
+        "**🔍 Find Arbitrage:** Scans for real-time crypto arbitrage opportunities and presents them to you.\n"
+        "**📊 Trusted Coins:** Shows a list of high-volume coins that have passed our security filters.\n"
+        "**💎 Premium Info:** Provides information about the advantages of Premium membership.\n"
+        "**🔑 Activate License:** Enter your license key from Gumroad to start your premium membership.\n\n"
+        "**Premium Commands:**\n"
+        "- `/price <SYMBOL>`: Shows the current price and security analysis of the specified cryptocurrency across all exchanges. E.g.: `/price BTCUSDT`\n\n"
+        "If you have any questions, please contact our support team: "
         f"{SUPPORT_USERNAME}"
     )
     await update.callback_query.edit_message_text(help_text, parse_mode='Markdown', disable_web_page_preview=True)
@@ -985,7 +985,7 @@ async def handle_license_activation(update: Update, context: ContextTypes.DEFAUL
     username = update.effective_user.username or f"user_{user_id}"
 
     # Only process if awaiting license from a *non-admin* user or specifically for license activation
-    # Admins' text messages are handled by handle_admin_text_input
+    # Admins' text messages are handled by handle_admin_state_messages
     if user_id != int(ADMIN_USER_ID) and not context.user_data.get('awaiting_license'):
         return # Not a license key submission from non-admin
 
@@ -994,10 +994,10 @@ async def handle_license_activation(update: Update, context: ContextTypes.DEFAUL
         context.user_data.pop('awaiting_license', None) # Reset state
 
         if license_key in bot.used_license_keys:
-            await update.message.reply_text("Bu lisans anahtarı daha önce kullanılmış. Lütfen farklı bir anahtar deneyin veya destek ile iletişime geçin.")
+            await update.message.reply_text("This license key has already been used. Please try a different key or contact support.")
             return
 
-        await update.message.reply_text("Lisans anahtarınız doğrulanıyor... Lütfen bekleyin.")
+        await update.message.reply_text("Verifying your license key... Please wait.")
 
         try:
             async with aiohttp.ClientSession() as session:
@@ -1016,34 +1016,34 @@ async def handle_license_activation(update: Update, context: ContextTypes.DEFAUL
                         bot.set_user_premium(user_id, username, expiry_date)
                         bot.add_used_license_key(license_key)
                         await update.message.reply_text(
-                            f"🎉 Tebrikler! Premium üyeliğiniz {expiry_date.strftime('%d.%m.%Y %H:%M')} tarihine kadar aktifleştirildi.\n"
-                            "Artık tüm premium özelliklere erişebilirsiniz!"
+                            f"🎉 Congratulations! Your Premium membership has been activated until {expiry_date.strftime('%d.%m.%Y %H:%M')}.\n"
+                            "You can now access all premium features!"
                         )
                     else:
                         await update.message.reply_text(
-                            "Geçersiz lisans anahtarı veya anahtar bu ürün için değil. Lütfen kontrol edin."
+                            "Invalid license key or key not for this product. Please check again."
                         )
         except Exception as e:
             logger.error(f"Gumroad API error: {e}")
-            await update.message.reply_text("Lisans doğrulama sırasında bir hata oluştu. Lütfen daha sonra tekrar deneyin.")
+            await update.message.reply_text("An error occurred during license verification. Please try again later.")
 
 async def price_check_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
     if not bot.is_premium(user_id) and str(user_id) != ADMIN_USER_ID:
-        await update.message.reply_text("Bu özellik sadece Premium kullanıcılar içindir. `/premium` yazarak daha fazla bilgi alın.")
+        await update.message.reply_text("This feature is for Premium users only. Type `/premium` for more info.")
         return
 
     if not context.args:
-        await update.message.reply_text("Lütfen bir kripto para sembolü girin. Örn: `/price BTCUSDT`")
+        await update.message.reply_text("Please enter a cryptocurrency symbol. E.g.: `/price BTCUSDT`")
         return
 
     symbol_input = context.args[0].upper()
     normalized_symbol = bot.normalize_symbol(symbol_input)
 
-    await context.bot.send_message(chat_id=user_id, text=f"'{normalized_symbol}' için fiyatlar aranıyor...")
+    await context.bot.send_message(chat_id=user_id, text=f"Searching for '{normalized_symbol}' prices...")
 
     if time.time() - bot.last_fetched_time > 30: # Data older than 30 seconds
-        await context.bot.send_message(chat_id=user_id, text="Piyasa verileri güncelleniyor, bu biraz zaman alabilir.")
+        await context.bot.send_message(chat_id=user_id, text="Market data is being updated, this might take a moment.")
         await bot.fetch_all_tickers()
 
     with bot.data_lock:
@@ -1061,21 +1061,21 @@ async def price_check_command(update: Update, context: ContextTypes.DEFAULT_TYPE
             total_volume += volume
 
     if not prices_found:
-        await context.bot.send_message(chat_id=user_id, text=f"'{normalized_symbol}' için hiçbir borsada fiyat bulunamadı.")
+        await context.bot.send_message(chat_id=user_id, text=f"No prices found for '{normalized_symbol}' on any exchange.")
         return
 
     prices_found.sort(key=lambda x: x['price'])
 
-    message = f"📈 **{normalized_symbol} Anlık Fiyatlar** 📈\n\n"
+    message = f"📈 **{normalized_symbol} Current Prices** 📈\n\n"
     for item in prices_found:
-        message += f"- {item['exchange'].upper()}: `{item['price']:.8f}` (Hacim: ${item['volume']:.0f})\n"
+        message += f"- {item['exchange'].upper()}: `{item['price']:.8f}` (Volume: ${item['volume']:.0f})\n"
 
-    is_trusted = "✅ Güvenilir Sembol" if normalized_symbol in bot.trusted_symbols else "⚠️ Güvenilir Olmayan Sembol"
-    is_suspicious = "🚨 Şüpheli Anahtar Kelime İçeriyor" if bot._is_suspicious_symbol(normalized_symbol) else ""
-    volume_analysis = f"Total 24s Hacim: `${total_volume:,.0f}`"
+    is_trusted = "✅ Trusted Symbol" if normalized_symbol in bot.trusted_symbols else "⚠️ Untrusted Symbol"
+    is_suspicious = "🚨 Contains Suspicious Keyword" if bot._is_suspicious_symbol(normalized_symbol) else ""
+    volume_analysis = f"Total 24h Volume: `${total_volume:,.0f}`"
 
     message += (
-        f"\n-- Analiz --\n"
+        f"\n-- Analysis --\n"
         f"{is_trusted}\n"
         f"{is_suspicious}\n"
         f"{volume_analysis}"
@@ -1090,25 +1090,25 @@ async def admin_panel_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     await query.answer()
 
     if query.from_user.id != int(ADMIN_USER_ID):
-        await query.edit_message_text("Bu özelliği kullanmaya yetkiniz yok.")
+        await query.edit_message_text("You are not authorized to use this feature.")
         return
 
     keyboard = [
-        [InlineKeyboardButton("Premium Ekle", callback_data="admin_add_premium")],
-        [InlineKeyboardButton("Premium Kaldır", callback_data="admin_remove_premium")],
-        [InlineKeyboardButton("Premium Kullanıcıları Listele", callback_data="admin_list_premium")],
-        [InlineKeyboardButton("İstatistikleri Görüntüle", callback_data="admin_view_stats")],
-        [InlineKeyboardButton("Mesaj Yayınla", callback_data="admin_broadcast_prompt")], # New
-        [InlineKeyboardButton("Affiliate Link Oluştur", callback_data="admin_generate_affiliate_link")], # New
-        [InlineKeyboardButton("Affiliate Listele", callback_data="admin_list_affiliates")], # New
-        [InlineKeyboardButton("Ana Menüye Dön", callback_data="back_to_main_menu")],
+        [InlineKeyboardButton("Add Premium", callback_data="admin_add_premium")],
+        [InlineKeyboardButton("Remove Premium", callback_data="admin_remove_premium")],
+        [InlineKeyboardButton("List Premium Users", callback_data="admin_list_premium")],
+        [InlineKeyboardButton("View Statistics", callback_data="admin_view_stats")],
+        [InlineKeyboardButton("Broadcast Message", callback_data="admin_broadcast_prompt")], # New
+        [InlineKeyboardButton("Generate Affiliate Link", callback_data="admin_generate_affiliate_link")], # New
+        [InlineKeyboardButton("List Affiliates", callback_data="admin_list_affiliates")], # New
+        [InlineKeyboardButton("Back to Main Menu", callback_data="back_to_main_menu")],
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    await query.edit_message_text("Admin Paneline Hoş Geldiniz:", reply_markup=reply_markup)
+    await query.edit_message_text("Welcome to the Admin Panel:", reply_markup=reply_markup)
 
 async def add_premium_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.effective_user.id != int(ADMIN_USER_ID):
-        await update.message.reply_text("Bu komutu kullanmaya yetkiniz yok.")
+        await update.message.reply_text("You are not authorized to use this command.")
         return
 
     # If called from message handler, context.args might be empty or combined.
@@ -1116,28 +1116,31 @@ async def add_premium_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     message_text_parts = update.message.text.split(maxsplit=2) # Split up to 2 times
     if message_text_parts[0].startswith('/addpremium'): # If called as a direct command
         if len(context.args) == 0:
-            await update.message.reply_text("Kullanım: `/addpremium <kullanıcı_id_veya_kullanıcı_adı> [gün]`\nÖrn: `/addpremium 123456789 30` veya `/addpremium my_user`")
+            await update.message.reply_text("Usage: `/addpremium <user_id_or_username> [days]`\nExample: `/addpremium 123456789 30` or `/addpremium my_user`")
             return
         target_str = context.args[0]
         days_str = context.args[1] if len(context.args) > 1 else '30' # Default 30 days
     elif context.user_data.get('admin_action') == 'add_premium': # If called from an awaited message
-        target_str = message_text_parts[0]
-        days_str = message_text_parts[1] if len(message_text_parts) > 1 else '30'
+        # In this case, message_text_parts[0] will be the target_str, and [1] the days_str
+        # If user just sent "user_id_or_username", message_text_parts will be [user_id_or_username]
+        # If user sent "user_id_or_username days", message_text_parts will be [user_id_or_username, days]
+        target_str = message_text_parts[0].strip()
+        days_str = message_text_parts[1].strip() if len(message_text_parts) > 1 else '30'
         context.user_data.pop('admin_action', None) # Clear state
     else:
         # Should not happen if handlers are set up correctly, but as a fallback
-        await update.message.reply_text("Geçersiz kullanım veya admin eylemi beklentisi yok.")
+        await update.message.reply_text("Invalid usage or no admin action expected.")
         return
 
     target_id = get_user_id_from_input(target_str)
     if not target_id:
-        await update.message.reply_text(f"Kullanıcı '{target_str}' bulunamadı.")
+        await update.message.reply_text(f"User '{target_str}' not found.")
         return
 
     try:
         days = int(days_str)
         if days <= 0:
-            await update.message.reply_text("Gün sayısı pozitif bir sayı olmalıdır.")
+            await update.message.reply_text("Number of days must be a positive integer.")
             return
         expiry_date = datetime.now() + timedelta(days=days)
         
@@ -1147,47 +1150,47 @@ async def add_premium_command(update: Update, context: ContextTypes.DEFAULT_TYPE
         target_username = user_data[0] if user_data else f"user_{target_id}"
 
         bot.set_user_premium(target_id, target_username, expiry_date)
-        await update.message.reply_text(f"Kullanıcı {target_username} ({target_id}) premium olarak {days} gün boyunca ayarlandı. Sona erme: {expiry_date.strftime('%d.%m.%Y %H:%M')}")
+        await update.message.reply_text(f"User {target_username} ({target_id}) set as premium for {days} days. Expires: {expiry_date.strftime('%d.%m.%Y %H:%M')}")
     except ValueError:
-        await update.message.reply_text("Geçersiz gün sayısı belirtildi.")
+        await update.message.reply_text("Invalid number of days provided.")
     except Exception as e:
         logger.error(f"Error adding premium: {e}")
-        await update.message.reply_text("Premium eklenirken bir hata oluştu.")
+        await update.message.reply_text("An error occurred while adding premium.")
 
 async def remove_premium_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.effective_user.id != int(ADMIN_USER_ID):
-        await update.message.reply_text("Bu komutu kullanmaya yetkiniz yok.")
+        await update.message.reply_text("You are not authorized to use this command.")
         return
 
     # If called from message handler, context.args might be empty or combined.
     message_text_parts = update.message.text.split(maxsplit=1)
     if message_text_parts[0].startswith('/removepremium'): # If called as a direct command
         if len(context.args) == 0:
-            await update.message.reply_text("Kullanım: `/removepremium <kullanıcı_id_veya_kullanıcı_adı>`\nÖrn: `/removepremium 123456789` veya `/removepremium my_user`")
+            await update.message.reply_text("Usage: `/removepremium <user_id_or_username>`\nExample: `/removepremium 123456789` or `/removepremium my_user`")
             return
         target_str = context.args[0]
     elif context.user_data.get('admin_action') == 'remove_premium': # If called from an awaited message
         target_str = message_text_parts[0].strip()
         context.user_data.pop('admin_action', None) # Clear state
     else:
-        await update.message.reply_text("Geçersiz kullanım veya admin eylemi beklentisi yok.")
+        await update.message.reply_text("Invalid usage or no admin action expected.")
         return
 
     target_id = get_user_id_from_input(target_str)
     if not target_id:
-        await update.message.reply_text(f"Kullanıcı '{target_str}' bulunamadı.")
+        await update.message.reply_text(f"User '{target_str}' not found.")
         return
 
     if bot.is_premium(target_id):
         bot.remove_user_premium(target_id)
-        await update.message.reply_text(f"Kullanıcı {target_str} ({target_id}) premium üyeliği kaldırıldı.")
+        await update.message.reply_text(f"User {target_str} ({target_id}) premium membership removed.")
     else:
-        await update.message.reply_text(f"Kullanıcı {target_str} ({target_id}) premium değil.")
+        await update.message.reply_text(f"User {target_str} ({target_id}) is not premium.")
 
 
 async def list_premium_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.effective_user.id != int(ADMIN_USER_ID):
-        await update.message.reply_text("Bu komutu kullanmaya yetkiniz yok.")
+        await update.message.reply_text("You are not authorized to use this command.")
         return
 
     try:
@@ -1195,45 +1198,45 @@ async def list_premium_command(update: Update, context: ContextTypes.DEFAULT_TYP
         premium_users = bot.cursor.fetchall()
 
         if not premium_users:
-            await update.message.reply_text("Şu anda premium kullanıcı bulunmamaktadır.")
+            await update.message.reply_text("No premium users found at the moment.")
             return
 
-        message_text = "💎 **Premium Kullanıcılar** 💎\n\n"
+        message_text = "💎 **Premium Users** 💎\n\n"
         for user_id, username, expiry_date in premium_users:
-            status = "Aktif" if expiry_date and expiry_date > datetime.now() else "Süresi Doldu"
+            status = "Active" if expiry_date and expiry_date > datetime.now() else "Expired"
             message_text += (
                 f"- @{username or 'N/A'} (ID: `{user_id}`)\n"
-                f"  Durum: {status} - Sona Erme: {expiry_date.strftime('%d.%m.%Y %H:%M') if expiry_date else 'N/A'}\n\n"
+                f"  Status: {status} - Expires: {expiry_date.strftime('%d.%m.%Y %H:%M') if expiry_date else 'N/A'}\n\n"
             )
         await context.bot.send_message(chat_id=update.effective_chat.id, text=message_text, parse_mode='Markdown')
 
     except Exception as e:
         logger.error(f"Error listing premium users: {e}")
-        await update.message.reply_text("Premium kullanıcılar listelenirken bir hata oluştu.")
+        await update.message.reply_text("An error occurred while listing premium users.")
 
 # --- Admin Broadcast Messaging ---
 async def admin_broadcast_message_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     # This handler can be called directly by /broadcast command, or from a callback
     if update.effective_user.id != int(ADMIN_USER_ID):
         if update.callback_query:
-            await update.callback_query.answer("Bu komutu kullanmaya yetkiniz yok.")
-            await update.callback_query.edit_message_text("Bu komutu kullanmaya yetkiniz yok.")
+            await update.callback_query.answer("You are not authorized to use this command.")
+            await update.callback_query.edit_message_text("You are not authorized to use this command.")
         else:
-            await update.message.reply_text("Bu komutu kullanmaya yetkiniz yok.")
+            await update.message.reply_text("You are not authorized to use this command.")
         return
 
     keyboard = [
-        [InlineKeyboardButton("Tüm Kullanıcılar", callback_data="broadcast_all")],
-        [InlineKeyboardButton("Ücretsiz Kullanıcılar", callback_data="broadcast_free")],
-        [InlineKeyboardButton("Premium Kullanıcılar", callback_data="broadcast_premium")],
-        [InlineKeyboardButton("Belirli Bir Kullanıcı (kullanıcı adı ile)", callback_data="broadcast_specific")],
+        [InlineKeyboardButton("All Users", callback_data="broadcast_all")],
+        [InlineKeyboardButton("Free Users", callback_data="broadcast_free")],
+        [InlineKeyboardButton("Premium Users", callback_data="broadcast_premium")],
+        [InlineKeyboardButton("Specific User (by username)", callback_data="broadcast_specific")],
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
     if update.callback_query:
-        await update.callback_query.edit_message_text("Yayın için hedef kitleyi seçin:", reply_markup=reply_markup)
+        await update.callback_query.edit_message_text("Select target audience for broadcast:", reply_markup=reply_markup)
     else:
-        await update.message.reply_text("Yayın için hedef kitleyi seçin:", reply_markup=reply_markup)
+        await update.message.reply_text("Select target audience for broadcast:", reply_markup=reply_markup)
 
 
 async def handle_broadcast_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1241,19 +1244,19 @@ async def handle_broadcast_callback(update: Update, context: ContextTypes.DEFAUL
     await query.answer()
 
     if query.from_user.id != int(ADMIN_USER_ID):
-        await query.edit_message_text("Bu fonksiyonu kullanmaya yetkiniz yok.")
+        await query.edit_message_text("You are not authorized to use this function.")
         return
 
     audience_type = query.data.split('_')[1] # e.g., 'all', 'free', 'premium', 'specific'
     context.user_data['broadcast_audience'] = audience_type
 
     if audience_type == "specific":
-        await query.edit_message_text("Lütfen kullanıcı adını (@ olmadan) ve ardından mesajınızı yazın.\n\nÖrnek: `bir_kullanici_adi Bu benim mesajım.`")
+        await query.edit_message_text("Please reply with the username (without @) followed by your message.\n\nExample: `some_username This is my message.`")
     else:
-        await query.edit_message_text(f"Lütfen {audience_type} kullanıcılara göndermek istediğiniz mesajı yazın.")
+        await query.edit_message_text(f"Please reply with the message you want to send to {audience_type} users.")
 
 async def handle_admin_broadcast_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    # This function is called by handle_admin_text_input, which already checks admin user
+    # This function is called by handle_admin_state_messages, which already checks admin user
     audience_type = context.user_data.get('broadcast_audience')
     message_text = update.message.text
 
@@ -1277,7 +1280,7 @@ async def handle_admin_broadcast_message(update: Update, context: ContextTypes.D
     elif audience_type == "specific":
         parts = message_text.split(maxsplit=1)
         if len(parts) < 2:
-            await update.message.reply_text("Geçersiz format. Lütfen kullanıcı adı ve mesajı sağlayın.")
+            await update.message.reply_text("Invalid format. Please provide username and message.")
             context.user_data.pop('broadcast_audience', None)
             return
         target_username = parts[0].strip()
@@ -1286,17 +1289,17 @@ async def handle_admin_broadcast_message(update: Update, context: ContextTypes.D
         bot.cursor.execute("SELECT user_id FROM users WHERE username = %s", (target_username,))
         result = bot.cursor.fetchone()
         if not result:
-            await update.message.reply_text(f"Kullanıcı @{target_username} bulunamadı.")
+            await update.message.reply_text(f"User @{target_username} not found.")
             context.user_data.pop('broadcast_audience', None)
             return
         user_ids = [result[0]]
         target_user_id = result[0]
     else:
-        await update.message.reply_text("Geçersiz yayın hedef kitlesi türü.")
+        await update.message.reply_text("Invalid broadcast audience type.")
         context.user_data.pop('broadcast_audience', None)
         return
 
-    await update.message.reply_text(f"{len(user_ids)} kullanıcıya mesaj gönderiliyor...")
+    await update.message.reply_text(f"Sending message to {len(user_ids)} users...")
 
     for user_id in user_ids:
         try:
@@ -1305,23 +1308,23 @@ async def handle_admin_broadcast_message(update: Update, context: ContextTypes.D
             await asyncio.sleep(0.05) # Small delay to avoid hitting Telegram API limits
         except error.TelegramError as e:
             failed_count += 1
-            logger.warning(f"Kullanıcı {user_id} (kullanıcı adı: {target_username if user_id == target_user_id else 'N/A'}) mesaj gönderilemedi: {e}")
+            logger.warning(f"Failed to send message to user {user_id} (username: {target_username if user_id == target_user_id else 'N/A'}): {e}")
             if "bot was blocked by the user" in str(e):
-                logger.info(f"Kullanıcı {user_id} botu engelledi.")
+                logger.info(f"User {user_id} blocked the bot.")
         except Exception as e:
             failed_count += 1
-            logger.error(f"Kullanıcı {user_id} mesaj gönderilirken beklenmedik hata oluştu: {e}")
+            logger.error(f"Unexpected error sending message to user {user_id}: {e}")
 
     await update.message.reply_text(
-        f"{audience_type} kullanıcılara yayın tamamlandı.\n"
-        f"Gönderilen: {sent_count}\n"
-        f"Başarısız: {failed_count}"
+        f"Broadcast to {audience_type} users completed.\n"
+        f"Sent: {sent_count}\n"
+        f"Failed: {failed_count}"
     )
     context.user_data.pop('broadcast_audience', None) # Clear the state
 
 async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.effective_user.id != int(ADMIN_USER_ID):
-        await update.message.reply_text("Bu komutu kullanmaya yetkiniz yok.")
+        await update.message.reply_text("You are not authorized to use this command.")
         return
 
     try:
@@ -1377,51 +1380,51 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         affiliate_stats = bot.cursor.fetchall()
 
         stats_message = (
-            f"📊 **Bot İstatistikleri** 📊\n\n"
-            f"👥 Toplam Kullanıcı: `{total_users}`\n"
-            f"💎 Aktif Premium Kullanıcı: `{active_premium_users}`\n"
-            f"⏳ Süresi Dolan Premium Kullanıcı: `{expired_premium_users}`\n"
-            f"🔄 Toplam Arbitraj Kaydı: `{total_arbitrage_records}`\n"
-            f"🌐 İzlenen Borsalar: `{len(bot.exchanges)}`\n"
-            f"💰 Güvenilir Semboller: `{len(bot.trusted_symbols)}`\n\n"
+            f"📊 **Bot Statistics** 📊\n\n"
+            f"👥 Total Users: `{total_users}`\n"
+            f"💎 Active Premium Users: `{active_premium_users}`\n"
+            f"⏳ Expired Premium Users: `{expired_premium_users}`\n"
+            f"🔄 Total Arbitrage Records: `{total_arbitrage_records}`\n"
+            f"🌐 Monitored Exchanges: `{len(bot.exchanges)}`\n"
+            f"💰 Trusted Symbols: `{len(bot.trusted_symbols)}`\n\n"
         )
 
         if recent_active_users:
-            stats_message += "🌟 **Son 24 Saatte En Aktif Kullanıcılar (Herhangi Bir Etkileşim)** 🌟\n"
+            stats_message += "🌟 **Most Active Users in Last 24 Hours (Any Interaction)** 🌟\n"
             for username, last_activity in recent_active_users:
-                stats_message += f"- @{username or 'N/A'} (Son aktivite: {last_activity.strftime('%Y-%m-%d %H:%M')})\n"
+                stats_message += f"- @{username or 'N/A'} (Last activity: {last_activity.strftime('%Y-%m-%d %H:%M')})\n"
             stats_message += "\n"
 
         if recent_check_users:
-            stats_message += "📈 **Son 24 Saatte Arbitraj Kontrolünde Aktif Olanlar** 📈\n"
+            stats_message += "📈 **Most Active Users in Arbitrage Checks (Last 24 Hours)** 📈\n"
             for username, last_check_time in recent_check_users:
-                stats_message += f"- @{username or 'N/A'} (Son kontrol: {last_check_time.strftime('%Y-%m-%d %H:%M')})\n"
+                stats_message += f"- @{username or 'N/A'} (Last check: {last_check_time.strftime('%Y-%m-%d %H:%M')})\n"
             stats_message += "\n"
 
         if affiliate_stats:
-            stats_message += "🔗 **Affiliate Programı İstatistikleri** 🔗\n"
+            stats_message += "🔗 **Affiliate Program Statistics** 🔗\n"
             for name, link_code, referred_users, premium_activations in affiliate_stats:
                 stats_message += (
                     f"**{name}** (`{link_code}`)\n"
-                    f"  - Yönlendirilen Kullanıcı: `{referred_users}`\n"
-                    f"  - Premium Aktivasyonları: `{premium_activasyonlari}`\n"
+                    f"  - Referred Users: `{referred_users}`\n"
+                    f"  - Premium Activations: `{premium_activations}`\n"
                 )
             stats_message += "\n"
 
         await update.message.reply_text(stats_message, parse_mode='Markdown')
 
     except Exception as e:
-        logger.error(f"Bot istatistikleri alınırken hata oluştu: {e}")
-        await update.message.reply_text("İstatistikler alınırken bir hata oluştu.")
+        logger.error(f"Error fetching bot statistics: {e}")
+        await update.message.reply_text("An error occurred while fetching statistics.")
 
 
 async def admin_check_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
     if str(user_id) != ADMIN_USER_ID:
-        await update.message.reply_text("Bu komutu kullanmaya yetkiniz yok.")
+        await update.message.reply_text("You are not authorized to use this command.")
         return
 
-    await context.bot.send_message(chat_id=user_id, text="Admin modunda arbitraj fırsatları aranıyor (daha yüksek kar eşiği ile)...")
+    await context.bot.send_message(chat_id=user_id, text="Searching for arbitrage opportunities in admin mode (with higher profit threshold)...")
 
     # This is a special admin-only check.
     # We'll use a higher profit threshold and exclude Huobi due to specific issues if any.
@@ -1430,7 +1433,7 @@ async def admin_check_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     max_opportunities = 20 # Admins can see more
     
     if time.time() - bot.last_fetched_time > 30: # Data older than 30 seconds
-        await context.bot.send_message(chat_id=user_id, text="Piyasa verileri güncelleniyor, bu biraz zaman alabilir.")
+        await context.bot.send_message(chat_id=user_id, text="Market data is being updated, this might take a moment.")
         await bot.fetch_all_tickers()
 
     with bot.data_lock:
@@ -1438,7 +1441,7 @@ async def admin_check_command(update: Update, context: ContextTypes.DEFAULT_TYPE
         current_volume_data = bot.volume_data
 
     if not current_ticker_data:
-        await context.bot.send_message(chat_id=user_id, text="Şu anda piyasa verileri mevcut değil. Lütfen daha sonra tekrar deneyin.")
+        await context.bot.send_message(chat_id=user_id, text="No market data available right now. Please try again later.")
         return
 
     opportunities_found = []
@@ -1480,7 +1483,7 @@ async def admin_check_command(update: Update, context: ContextTypes.DEFAULT_TYPE
                     "symbol": symbol,
                     "buy_exchange": buy_exchange,
                     "buy_price": buy_price,
-                    "sell_exchange": sell_price,
+                    "sell_exchange": sell_exchange,
                     "sell_price": sell_price,
                     "profit_percentage": profit_percentage,
                     "volume_usd": volume_usd
@@ -1493,33 +1496,33 @@ async def admin_check_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     opportunities_found.sort(key=lambda x: x['profit_percentage'], reverse=True)
 
     if not opportunities_found:
-        await context.bot.send_message(chat_id=user_id, text="Üzgünüm, admin kontrolünde kayda değer arbitraj fırsatı bulunamadı (Huobi hariç).")
+        await context.bot.send_message(chat_id=user_id, text="Sorry, no significant arbitrage opportunities found in admin check (excluding Huobi).")
     else:
-        message = "🚨 **Admin Arbitraj Fırsatları (Yüksek Eşik)** 🚨\n\n"
+        message = "🚨 **Admin Arbitrage Opportunities (High Threshold)** 🚨\n\n"
         for i, opp in enumerate(opportunities_found[:max_opportunities]):
             message += (
                 f"**{opp['symbol']}**\n"
-                f"📈 Kar: `{opp['profit_percentage']:.2f}%`\n"
-                f"🟢 Al: `{opp['buy_price']:.8f}` ({opp['buy_exchange'].upper()})\n"
-                f"🔴 Sat: `{opp['sell_price']:.8f}` ({opp['sell_exchange'].upper()})\n"
-                f"💰 24s Hacim: `${opp['volume_usd']:.0f}`\n"
+                f"📈 Profit: `{opp['profit_percentage']:.2f}%`\n"
+                f"🟢 Buy: `{opp['buy_price']:.8f}` ({opp['buy_exchange'].upper()})\n"
+                f"🔴 Sell: `{opp['sell_price']:.8f}` ({opp['sell_exchange'].upper()})\n"
+                f"💰 24h Volume: `${opp['volume_usd']:.0f}`\n"
                 f"------------------------------------\n"
             )
-        message += "\n*Bu fırsatlar admin panelinden yüksek kar eşiği ve Huobi hariç olarak listelenmiştir."
+        message += "\n*These opportunities are listed from the admin panel with a higher profit threshold and excluding Huobi."
         await context.bot.send_message(chat_id=user_id, text=message, parse_mode='Markdown')
 
 # --- Affiliate Management ---
 async def generate_affiliate_link_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.effective_user.id != int(ADMIN_USER_ID):
-        await update.message.reply_text("Bu komutu kullanmaya yetkiniz yok.")
+        await update.message.reply_text("You are not authorized to use this command.")
         return
 
     # If called directly by command
     if update.message.text.startswith('/generate_affiliate_link'):
         if not context.args or len(context.args) < 1:
-            await update.message.reply_text("Kullanım: `/generate_affiliate_link <influencer_adı> [özel_kod]`\n"
-                                            "Örnek: `/generate_affiliate_link AyşeYılmaz`\n"
-                                            "Örnek: `/generate_affiliate_link CanDemir can_promo`")
+            await update.message.reply_text("Usage: `/generate_affiliate_link <influencer_name> [custom_code]`\n"
+                                            "Example: `/generate_affiliate_link JohnDoe`\n"
+                                            "Example: `/generate_affiliate_link JaneSmith jane_promo`")
             return
         influencer_name = context.args[0]
         custom_code = context.args[1] if len(context.args) > 1 else None
@@ -1527,14 +1530,14 @@ async def generate_affiliate_link_command(update: Update, context: ContextTypes.
     elif context.user_data.get('admin_action') == 'generate_affiliate_link_prompt':
         message_parts = update.message.text.split(maxsplit=1)
         if not message_parts:
-            await update.message.reply_text("Geçersiz giriş. Lütfen influencer'ın adını ve isteğe bağlı bir özel kodu sağlayın.")
+            await update.message.reply_text("Invalid input. Please provide the influencer's name and an optional custom code.")
             context.user_data.pop('admin_action', None)
             return
         influencer_name = message_parts[0]
         custom_code = message_parts[1] if len(message_parts) > 1 else None
         context.user_data.pop('admin_action', None) # Clear the state
     else:
-        await update.message.reply_text("Geçersiz kullanım veya admin eylemi beklentisi yok.")
+        await update.message.reply_text("Invalid usage or no admin action expected.")
         return
 
     if custom_code:
@@ -1546,7 +1549,7 @@ async def generate_affiliate_link_command(update: Update, context: ContextTypes.
         # Ensure link_code is unique
         bot.cursor.execute("SELECT 1 FROM affiliates WHERE link_code = %s", (link_code,))
         if bot.cursor.fetchone():
-            await update.message.reply_text(f"Affiliate link kodu `{link_code}` zaten mevcut. Lütfen farklı bir özel kod deneyin veya yeniden oluşturun.")
+            await update.message.reply_text(f"Affiliate link code `{link_code}` already exists. Please try a different custom code or regenerate.")
             return
 
         bot.cursor.execute(
@@ -1560,20 +1563,20 @@ async def generate_affiliate_link_command(update: Update, context: ContextTypes.
 
         affiliate_link = f"https://t.me/{context.bot.username}?start=aff_{link_code}"
         await update.message.reply_text(
-            f"**{influencer_name}** için Affiliate linki oluşturuldu:\n"
-            f"Kod: `{link_code}`\n"
+            f"Affiliate link generated for **{influencer_name}**:\n"
+            f"Code: `{link_code}`\n"
             f"Link: `{affiliate_link}`",
             parse_mode='Markdown'
         )
-        logger.info(f"{influencer_name} için affiliate linki oluşturuldu, kod: {link_code}")
+        logger.info(f"Affiliate link generated for {influencer_name}, code: {link_code}")
 
     except Exception as e:
-        logger.error(f"Affiliate link oluşturulurken hata oluştu: {e}")
-        await update.message.reply_text("Affiliate link oluşturulurken bir hata oluştu.")
+        logger.error(f"Error generating affiliate link: {e}")
+        await update.message.reply_text("An error occurred while generating the affiliate link.")
 
 async def list_affiliates_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.effective_user.id != int(ADMIN_USER_ID):
-        await update.message.reply_text("Bu komutu kullanmaya yetkiniz yok.")
+        await update.message.reply_text("You are not authorized to use this command.")
         return
 
     try:
@@ -1581,21 +1584,21 @@ async def list_affiliates_command(update: Update, context: ContextTypes.DEFAULT_
         affiliates_list = bot.cursor.fetchall()
 
         if not affiliates_list:
-            await update.message.reply_text("Hiç affiliate linki bulunamadı.")
+            await update.message.reply_text("No affiliate links found.")
             return
 
-        message_text = "🔗 **Mevcut Affiliate Linkleri** 🔗\n\n"
+        message_text = "🔗 **Existing Affiliate Links** 🔗\n\n"
         for name, link_code, created_at in affiliates_list:
             message_text += (
                 f"**{name}** (`{link_code}`)\n"
-                f"  - Oluşturulma: {created_at.strftime('%Y-%m-%d %H:%M')}\n"
+                f"  - Created At: {created_at.strftime('%Y-%m-%d %H:%M')}\n"
                 f"  - Link: `https://t.me/{context.bot.username}?start=aff_{link_code}`\n\n"
             )
         await update.message.reply_text(message_text, parse_mode='Markdown')
 
     except Exception as e:
-        logger.error(f"Affiliate'ler listelenirken hata oluştu: {e}")
-        await update.message.reply_text("Affiliate linkleri listelenirken bir hata oluştu.")
+        logger.error(f"Error listing affiliates: {e}")
+        await update.message.reply_text("An error occurred while listing affiliate links.")
 
 # --- General Message and Callback Handlers ---
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1609,17 +1612,17 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     elif query.data == "premium_info":
         await send_premium_info(update, context)
     elif query.data == "activate_license":
-        await query.edit_message_text("Lütfen premium üyeliği aktifleştirmek için Gumroad lisans anahtarınızı yanıtlayın.")
+        await query.edit_message_text("Please reply with your Gumroad license key to activate premium membership.")
         context.user_data['awaiting_license'] = True
     elif query.data == "help":
         await send_help_info(update, context)
     elif query.data == "admin_panel":
         await admin_panel_callback(update, context)
     elif query.data == "admin_add_premium":
-        await query.edit_message_text("Lütfen kullanıcının ID'sini veya kullanıcı adını (örn: `123456789` veya `benim_kullanıcı_adı`) ve isteğe bağlı olarak gün sayısını (örn: `30`) yanıtlayın.\nÖrnek: `123456789 30` veya `benim_kullanıcı_adı`")
+        await query.edit_message_text("Please reply with the user's ID or username (e.g., `123456789` or `my_username`) and optionally the number of days (e.g., `30`).\nExample: `123456789 30` or `my_username`")
         context.user_data['admin_action'] = 'add_premium'
     elif query.data == "admin_remove_premium":
-        await query.edit_message_text("Lütfen kullanıcının ID'sini veya kullanıcı adını (örn: `123456789` veya `benim_kullanıcı_adı`) yanıtlayın.")
+        await query.edit_message_text("Please reply with the user's ID or username (e.g., `123456789` or `my_username`).")
         context.user_data['admin_action'] = 'remove_premium'
     elif query.data == "admin_list_premium":
         await list_premium_command(update, context)
@@ -1630,34 +1633,39 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     elif query.data in ["broadcast_all", "broadcast_free", "broadcast_premium", "broadcast_specific"]: # New
         await handle_broadcast_callback(update, context)
     elif query.data == "admin_generate_affiliate_link": # New
-        await query.edit_message_text("Lütfen influencer'ın adını ve isteğe bağlı bir özel kodu yanıtlayın.\nKullanım: `AyşeYılmaz` veya `CanDemir can_promo`")
+        await query.edit_message_text("Please reply with the influencer's name and an optional custom code.\nUsage: `JohnDoe` or `JaneSmith jane_promo`")
         context.user_data['admin_action'] = 'generate_affiliate_link_prompt' # Await message
     elif query.data == "admin_list_affiliates": # New
         await list_affiliates_command(update, context)
     elif query.data == "back_to_main_menu":
         await start_command(update, context) # Or a dedicated main menu function
     else:
-        await query.edit_message_text("Bilinmeyen komut.")
+        await query.edit_message_text("Unknown command.")
 
 # New handler for all admin text input not caught by a specific command
-async def handle_admin_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def handle_admin_state_messages(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.effective_user.id != int(ADMIN_USER_ID):
-        return # Not an admin message
+        return # Should not happen due to filter, but good for safety
 
     # Check if a broadcast message is expected
     if context.user_data.get('broadcast_audience'):
         await handle_admin_broadcast_message(update, context)
     # Check if another admin action is expected
     elif context.user_data.get('admin_action') == 'add_premium':
+        # Re-call the command handler for processing the input
+        # We need to set context.args from the message text for these functions to parse correctly
+        context.args = update.message.text.split()
         await add_premium_command(update, context)
     elif context.user_data.get('admin_action') == 'remove_premium':
+        # Re-call the command handler
+        context.args = update.message.text.split()
         await remove_premium_command(update, context)
     elif context.user_data.get('admin_action') == 'generate_affiliate_link_prompt':
+        # Re-call the command handler
+        context.args = update.message.text.split()
         await generate_affiliate_link_command(update, context)
     else:
-        # This is an admin text message not associated with an ongoing state.
-        # Could log it or send a "command not recognized" message if needed.
-        logger.debug(f"Admin {update.effective_user.id} sent unhandled text: {update.message.text}")
+        logger.debug(f"Admin {update.effective_user.id} sent unhandled text in state-message handler: {update.message.text}")
 
 
 def main() -> None:
@@ -1677,23 +1685,27 @@ def main() -> None:
     application.add_handler(CommandHandler("listpremium", list_premium_command))
     application.add_handler(CommandHandler("stats", stats_command))
     application.add_handler(CommandHandler("admincheck", admin_check_command))
-    application.add_handler(CommandHandler("price", price_check_command))
+    application.add_handler(CommandHandler("price", price_check_command)) # New command handler
     application.add_handler(CommandHandler("generate_affiliate_link", generate_affiliate_link_command)) # New command
     application.add_handler(CommandHandler("list_affiliates", list_affiliates_command)) # New command
     application.add_handler(CommandHandler("broadcast", admin_broadcast_message_prompt)) # New command
 
     # Message handlers (order matters: more specific handlers first)
-    # 1. Admin text messages (including those awaiting input for actions/broadcasts)
+    # This handler will catch all text messages from ADMIN that are NOT commands
+    # and dispatch them based on the context.user_data state.
+    # This replaces the problematic filters.ContextUpdate usage.
     application.add_handler(MessageHandler(
         filters.TEXT & filters.User(int(ADMIN_USER_ID)) & ~filters.COMMAND,
-        handle_admin_text_input
+        handle_admin_state_messages
     ))
-    # 2. General user text messages (e.g., license activation)
+
+    # This handler will catch all other text messages (non-commands, non-admin)
+    # The handle_license_activation function itself checks context.user_data['awaiting_license']
     application.add_handler(MessageHandler(
         filters.TEXT & ~filters.COMMAND,
         handle_license_activation
     ))
-
+    
     # Callback handlers
     application.add_handler(CallbackQueryHandler(button_handler))
 
@@ -1707,7 +1719,7 @@ def main() -> None:
     application.post_stop = cleanup
 
     application.run_polling()
-    logger.info("Gelişmiş Arbitraj Botu başarıyla başlatıldı.")
+    logger.info("Advanced Arbitrage Bot started successfully.")
 
 
 if __name__ == '__main__':
