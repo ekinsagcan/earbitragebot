@@ -1022,6 +1022,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await show_main_menu(query)
     elif query.data == 'activate_license':
         await show_license_activation(query)
+    elif query.data == 'send_message' and query.from_user.id == ADMIN_USER_ID:
+        await show_send_message_options(query)
 
 async def handle_arbitrage_check(query):
     # Yüklenme mesajını göster
