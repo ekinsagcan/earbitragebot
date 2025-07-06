@@ -1755,22 +1755,27 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Access denied. Admin only command.")
         return
     
-    conn = bot.get_db_connection()
     try:
+        # Her sorgu için ayrı bağlantı kullan
+        conn = bot.get_db_connection()
+        
+        # Total users
         with conn.cursor() as cursor:
-            # Get total users
             cursor.execute('SELECT COUNT(*) FROM users')
             total_users = cursor.fetchone()[0]
-            
-            # Get premium users
+        
+        # Premium users
+        with conn.cursor() as cursor:
             cursor.execute('SELECT COUNT(*) FROM premium_users')
             premium_users = cursor.fetchone()[0]
-            
-            # Get arbitrage data count
+        
+        # Arbitrage data
+        with conn.cursor() as cursor:
             cursor.execute('SELECT COUNT(*) FROM arbitrage_data')
             total_arbitrage_records = cursor.fetchone()[0]
-            
-            # Get most active users (by arbitrage checks)
+        
+        # Top users
+        with conn.cursor() as cursor:
             cursor.execute('''
                 SELECT user_id, COUNT(*) as activity_count 
                 FROM arbitrage_data 
@@ -1779,8 +1784,9 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 LIMIT 5
             ''')
             top_users = cursor.fetchall()
-            
-            # Get recent premium activations
+        
+        # Recent premium
+        with conn.cursor() as cursor:
             cursor.execute('''
                 SELECT user_id, username, added_date 
                 FROM premium_users 
@@ -1788,11 +1794,11 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 LIMIT 5
             ''')
             recent_premium = cursor.fetchall()
-    except Exception as e:
-        logger.error(f"Error fetching stats from database: {e}")
-        return await update.message.reply_text("❌ Error fetching statistics.")
-    
-    text = f"""📊 **Advanced Bot Statistics**
+        
+        # Affiliate stats
+        affiliate_stats = bot.get_affiliate_stats()
+        
+        text = f"""📊 **Advanced Bot Statistics**
 
 👥 **Users:**
 • Total users: {total_users}
@@ -1804,17 +1810,29 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 • Exchanges monitored: {len(bot.exchanges)}
 • Trusted symbols: {len(bot.trusted_symbols)}
 
-🏆 **Top Active Users:**
-"""
-    
-    for i, (user_id, count) in enumerate(top_users, 1):
-        text += f"{i}. User ID {user_id}: {count} checks\n"
-    
-    text += "\n🆕 **Recent Premium Activations:**\n"
-    for i, (user_id, username, added_date) in enumerate(recent_premium, 1):
-        text += f"{i}. @{username or 'Unknown'} (ID: {user_id}) on {added_date}\n"
-    
-    await update.message.reply_text(text)
+🏆 **Top Active Users:"""
+        
+        for i, (user_id, count) in enumerate(top_users, 1):
+            text += f"\n{i}. User ID {user_id}: {count} checks"
+        
+        text += "\n\n🆕 **Recent Premium Activations:**"
+        for i, (user_id, username, added_date) in enumerate(recent_premium, 1):
+            text += f"\n{i}. @{username or 'Unknown'} (ID: {user_id}) on {added_date}"
+        
+        if affiliate_stats:
+            text += "\n\n🤝 **Affiliate Stats:**"
+            for stat in affiliate_stats[:3]:  # Show top 3
+                rate = (stat['premium_conversions']/stat['total_uses']*100) if stat['total_uses'] > 0 else 0
+                text += f"\n• {stat['name']}: {stat['total_uses']} refs, {stat['premium_conversions']} conv ({rate:.1f}%)"
+        
+        await update.message.reply_text(text)
+        
+    except Exception as e:
+        logger.error(f"Error in stats_command: {e}")
+        await update.message.reply_text("❌ Error fetching statistics. Please try again later.")
+    finally:
+        if conn:
+            conn.close()
 
 async def admin_check_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Sadece adminler için Huobi hariç ve %40 limitli arbitraj kontrolü"""
