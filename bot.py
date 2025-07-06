@@ -1,6 +1,7 @@
 import os
 import asyncio
 import logging
+import threading
 from datetime import datetime, timedelta
 from typing import Dict, List, Tuple, Set
 import aiohttp
@@ -120,7 +121,6 @@ class ArbitrageBot:
 
         self.conn = None
         self._conn_lock = threading.Lock()
-
         self.init_database()
         self.update_arbitrage_table()
         
@@ -173,6 +173,9 @@ class ArbitrageBot:
 
     def get_db_connection(self):
         """Thread-safe database connection getter"""
+        if not hasattr(self, '_conn_lock'):  # Eğer lock yoksa oluştur
+            self._conn_lock = threading.Lock()
+            
         with self._conn_lock:
             if self._conn is None or self._conn.closed:
                 try:
@@ -193,8 +196,11 @@ class ArbitrageBot:
 
     def close_connection(self):
         """Clean up database connection"""
+        if not hasattr(self, '_conn_lock'):  # Eğer lock yoksa çık
+            return
+            
         with self._conn_lock:
-            if self._conn is not None:
+            if hasattr(self, '_conn') and self._conn is not None:
                 try:
                     self._conn.close()
                     logger.info("Database connection closed")
@@ -205,7 +211,8 @@ class ArbitrageBot:
 
     def __del__(self):
         """Destructor to ensure connection is closed"""
-        self.close_connection()
+        if hasattr(self, '_conn_lock'):  # Sadece lock varsa kapatmayı dene
+            self.close_connection()
         
     def get_all_users(self) -> List[Dict]:
         """Get all users from database"""
