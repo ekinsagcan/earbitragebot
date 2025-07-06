@@ -118,6 +118,8 @@ class ArbitrageBot:
 
         self.affiliate_links = {}
 
+        self.conn = None
+
         self.init_database()
         self.update_arbitrage_table()
         
