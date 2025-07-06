@@ -1062,7 +1062,20 @@ class ArbitrageBot:
         except Exception as e:
             logger.error(f"Error saving user: {e}")
             conn.rollback()
-    
+
+    def check_table_columns(self):
+        conn = self.get_db_connection()
+        try:
+            with conn.cursor() as cursor:
+                cursor.execute("SELECT column_name FROM information_schema.columns WHERE table_name = 'arbitrage_data'")
+                columns = [row[0] for row in cursor.fetchall()]
+                logger.info(f"arbitrage_data columns: {columns}")
+        except Exception as e:
+           logger.error(f"Error checking table columns: {e}")
+        finally:
+            if conn:
+                conn.close()
+
     def save_arbitrage_data(self, opportunity: Dict):
         """Save arbitrage data to PostgreSQL."""
         conn = self.get_db_connection()
