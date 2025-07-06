@@ -631,23 +631,41 @@ class ArbitrageBot:
             logger.error(f"License verification error: {str(e)}")
             return {'success': False, 'error': str(e)}
 
-    def create_affiliate_link(self, influencer_id: int, influencer_name: str) -> str:
-        """Create a unique affiliate link"""
-        code = f"ref-{influencer_id}-{int(time.time())}"
-        conn = self.get_db_connection()
-        try:
-            with conn.cursor() as cursor:
-                cursor.execute('''
-                    INSERT INTO affiliates 
-                    (affiliate_code, influencer_id, influencer_name)
-                    VALUES (%s, %s, %s)
-                ''', (code, influencer_id, influencer_name))
+def create_affiliate_link(self, influencer_id: int, influencer_name: str) -> str:
+    """Create a new affiliate link with proper error handling"""
+    code = f"ref-{influencer_id}-{int(time.time())}"
+    conn = self.get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            # Önce tablonun varlığını kontrol et
+            cursor.execute("""
+                SELECT EXISTS (
+                    SELECT FROM information_schema.tables 
+                    WHERE table_name = 'affiliates'
+                )
+            """)
+            if not cursor.fetchone()[0]:
+                raise ValueError("Affiliates table does not exist")
+            
+            # Yeni affiliate kodunu ekle
+            cursor.execute('''
+                INSERT INTO affiliates 
+                (affiliate_code, influencer_id, influencer_name)
+                VALUES (%s, %s, %s)
+                RETURNING affiliate_code
+            ''', (code, influencer_id, influencer_name))
+            
+            result = cursor.fetchone()
             conn.commit()
-            return code
-        except Exception as e:
-            logger.error(f"Error creating affiliate link: {e}")
-            conn.rollback()
-            return None
+            return result[0] if result else None
+            
+    except Exception as e:
+        logger.error(f"Error creating affiliate link: {e}")
+        conn.rollback()
+        return None
+    finally:
+        if conn:
+            conn.close()
 
     def track_affiliate_user(self, user_id: int, affiliate_code: str):
         """Track user who came from affiliate link"""
