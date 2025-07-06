@@ -182,6 +182,37 @@ class ArbitrageBot:
                 raise
         return self.conn
 
+    def get_all_users(self) -> List[Dict]:
+        """Get all users from database"""
+        conn = self.get_db_connection()
+        try:
+            with conn.cursor() as cursor:
+                cursor.execute('SELECT user_id, username, is_premium FROM users')
+                return [
+                    {'user_id': row[0], 'username': row[1] or 'Unknown', 'is_premium': row[2]}
+                    for row in cursor.fetchall()
+                ]
+        except Exception as e:
+            logger.error(f"Error getting all users: {e}")
+            return []
+
+    def get_free_users(self) -> List[Dict]:
+        """Get free users from database"""
+        conn = self.get_db_connection()
+        try:
+            with conn.cursor() as cursor:
+                cursor.execute('''
+                    SELECT user_id, username FROM users 
+                    WHERE user_id NOT IN (SELECT user_id FROM premium_users)
+                ''')
+                return [
+                    {'user_id': row[0], 'username': row[1] or 'Unknown'}
+                    for row in cursor.fetchall()
+                ]
+        except Exception as e:
+            logger.error(f"Error getting free users: {e}")
+            return []
+
     async def get_cached_arbitrage_data(self, is_premium: bool = False):
         # Cache hit/miss sayacı
         if self.cache_data and (time.time() - self.cache_timestamp) < self.cache_duration:
