@@ -1340,10 +1340,16 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await show_license_activation(query)
     elif query.data == 'send_message' and query.from_user.id == ADMIN_USER_ID:
         await bot.show_send_message_options(query)
-    elif query.data == 'send_message':
+    elif query.data == 'send_message' and query.from_user.id == ADMIN_USER_ID:
         await show_send_message_options(query)
-    elif query.data.startswith('send_'):
+    elif query.data.startswith('send_') and query.from_user.id == ADMIN_USER_ID:
         await handle_send_message_choice(query)
+    elif query.data == 'affiliate_mgmt' and query.from_user.id == ADMIN_USER_ID:
+        await show_affiliate_management(query)
+    elif query.data == 'create_affiliate' and query.from_user.id == ADMIN_USER_ID:
+        await create_affiliate_command(query)
+    elif query.data == 'affiliate_stats' and query.from_user.id == ADMIN_USER_ID:
+        await affiliate_stats_command(query)
 
 async def handle_arbitrage_check(query):
     await query.edit_message_text("🔄 Scanning prices across exchanges... (Security filters active)")
