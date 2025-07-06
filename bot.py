@@ -208,6 +208,28 @@ class ArbitrageBot:
                 finally:
                     self._conn = None
 
+    def fix_affiliates_table():
+        conn = bot.get_db_connection()
+        try:
+            with conn.cursor() as cursor:
+                # Eksik sütunları ekle
+                cursor.execute("""
+                    ALTER TABLE affiliates 
+                    ADD COLUMN IF NOT EXISTS affiliate_code TEXT PRIMARY KEY,
+                    ADD COLUMN IF NOT EXISTS influencer_id BIGINT,
+                    ADD COLUMN IF NOT EXISTS influencer_name TEXT,
+                    ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    ADD COLUMN IF NOT EXISTS uses INT DEFAULT 0
+                """)
+                conn.commit()
+                logger.info("Affiliates table fixed successfully")
+        except Exception as e:
+            logger.error(f"Error fixing affiliates table: {e}")
+            conn.rollback()
+        finally:
+            if conn:
+                conn.close()
+
     def __del__(self):
         """Destructor to ensure connection is closed"""
         if hasattr(self, '_conn_lock'):  # Sadece lock varsa kapatmayı dene
