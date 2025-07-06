@@ -1184,6 +1184,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     bot.save_user(user.id, user.username or "")
     
+    # Check for affiliate link
+    if context.args and context.args[0].startswith('ref-'):
+        affiliate_code = context.args[0]
+        bot.track_affiliate_user(user.id, affiliate_code)
+    
     is_premium = bot.is_premium_user(user.id)
     welcome_text = "🎯 Premium" if is_premium else "🔍 Free"
     
@@ -1904,6 +1909,8 @@ def main():
     app.add_handler(CommandHandler("stats", stats_command))
     app.add_handler(CommandHandler("admincheck", admin_check_command))
     app.add_handler(CommandHandler("price", price_check_command)) # Yeni komut handler'ı
+    app.add_handler(CommandHandler("createaffiliate", create_affiliate_command))
+    app.add_handler(CommandHandler("affiliatestats", affiliate_stats_command))
     
     # Message handlers (command handlers'dan sonra)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_license_activation))
