@@ -803,22 +803,40 @@ class ArbitrageBot:
             logger.error(f"Error adding premium user: {e}")
             conn.rollback()
 
-    async def create_affiliate_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        if update.effective_user.id != ADMIN_USER_ID:
-            await update.message.reply_text("❌ Access denied. Admin only command.")
+   
+
+    async def create_affiliate_command(update: Update, context: ContextTypes.DEFAULT_TYPE = None):
+        if isinstance(update, Update):  # Komut olarak çağrıldıysa
+            user = update.effective_user
+            message = update.message
+        else:  # CallbackQuery olarak çağrıldıysa
+            query = update
+            user = query.from_user
+            message = query.message
+    
+        if user.id != ADMIN_USER_ID:
+            if isinstance(update, Update):
+                await update.message.reply_text("❌ Admin only command.")
+            else:
+                await query.answer("❌ Admin only.")
             return
     
-        influencer_name = ' '.join(context.args) if context.args else update.effective_user.username
-        code = self.create_affiliate_link(update.effective_user.id, influencer_name)
+        influencer_name = ' '.join(context.args) if context and context.args else user.username
+        code = bot.create_affiliate_link(user.id, influencer_name)
     
         if code:
-            await update.message.reply_text(
+            response = (
                 f"✅ Affiliate link created for {influencer_name}:\n\n"
-                f"https://t.me/your_bot_username?start={code}\n\n"
+                f"https://t.me/{context.bot.username}?start={code}\n\n"
                 f"Share this link to track referrals."
             )
         else:
-            await update.message.reply_text("❌ Error creating affiliate link.")
+            response = "❌ Error creating affiliate link."
+    
+        if isinstance(update, Update):
+            await update.message.reply_text(response)
+        else:
+            await query.edit_message_text(response)
 
     async def affiliate_stats_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if update.effective_user.id != ADMIN_USER_ID:
@@ -2051,7 +2069,8 @@ def main():
     app.add_handler(CommandHandler("stats", stats_command))
     app.add_handler(CommandHandler("admincheck", admin_check_command))
     app.add_handler(CommandHandler("price", price_check_command))
-    
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("broadcast", broadcast_command))  # Yeni handler
     app.add_handler(CommandHandler("createaffiliate", create_affiliate_command))
     app.add_handler(CommandHandler("affiliatestats", affiliate_stats_command))
     
