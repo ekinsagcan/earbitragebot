@@ -2001,9 +2001,8 @@ def main():
     if ADMIN_USER_ID == 0:
         logger.warning("ADMIN_USER_ID not set! Admin commands will not work.")
     
-    app = Application.builder().token(TOKEN).build()
-
-    app.post_init = start_background_tasks
+    # Webhook'u devre dışı bırak
+    app = Application.builder().token(TOKEN).post_init(start_background_tasks).build()
     
     # Command handlers
     app.add_handler(CommandHandler("start", start))
@@ -2025,21 +2024,14 @@ def main():
     # Callback handlers
     app.add_handler(CallbackQueryHandler(button_handler))
 
-    async def cleanup():
-        if bot.session and not bot.session.closed:
-            await bot.session.close()
-        if bot.conn and not bot.conn.closed:
-            bot.conn.close()
-            logger.info("PostgreSQL database connection closed.")
+    try:
+        logger.info("Starting bot in polling mode...")
+        app.run_polling(drop_pending_updates=True)
+    except Exception as e:
+        logger.error(f"Bot failed to start: {e}")
+    finally:
+        logger.info("Bot stopped")
+        
     
-    app.post_stop = cleanup
-    
-    app.run_polling()
-    
-    logger.info("Advanced Arbitrage Bot starting...")
-    logger.info(f"Monitoring {len(bot.exchanges)} exchanges")
-    logger.info(f"Tracking {len(bot.trusted_symbols)} trusted symbols")
-    logger.info(f"Premium users loaded: {len(bot.premium_users)}")
-
 if __name__ == '__main__':
     main()
