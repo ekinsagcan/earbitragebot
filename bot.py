@@ -176,7 +176,7 @@ class ArbitrageBot:
             'concurrent_users': 0
         }
 
-     def ensure_tables_exist(self):
+    def ensure_tables_exist(self):
         """Ensure all required tables exist with correct structure"""
         conn = self.get_db_connection()
         try:
