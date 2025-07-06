@@ -20,6 +20,10 @@ from telegram.ext import (
     ContextTypes,
 )
 
+
+
+# Initialize the ArbitrageBot instance
+arb_bot = ArbitrageBot()
 # Gumroad API settings
 GUMROAD_PRODUCT_ID = os.getenv("GUMROAD_PRODUCT_ID", "")
 GUMROAD_ACCESS_TOKEN = os.getenv("GUMROAD_ACCESS_TOKEN", "")
@@ -247,23 +251,6 @@ class ArbitrageBot:
         finally:
             if conn:
                 conn.close()
-
-    def save_user(self, user_id: int, username: str):
-        """Save user to PostgreSQL database."""
-        conn = self.get_db_connection()
-        try:
-            with conn.cursor() as cursor:
-                cursor.execute('''
-                    INSERT INTO users (user_id, username)
-                    VALUES (%s, %s)
-                    ON CONFLICT (user_id) DO UPDATE SET 
-                        username = EXCLUDED.username,
-                        added_date = CURRENT_TIMESTAMP
-                ''', (user_id, username))
-            conn.commit()
-        except Exception as e:
-            logger.error(f"Error saving user: {e}")
-            conn.rollback()
 
     def recreate_affiliates_table():
         conn = bot.get_db_connection()
@@ -1430,13 +1417,13 @@ ADMIN_USER_ID = int(os.getenv("ADMIN_USER_ID", "0"))
 # Command Handlers
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
-    bot.save_user(user.id, user.username or "")
+    arb_bot.save_user(user.id, user.username or "")
     
     if context.args and context.args[0].startswith('ref-'):
         affiliate_code = context.args[0]
-        bot.track_affiliate_user(user.id, affiliate_code)
+        arb_bot.track_affiliate_user(user.id, affiliate_code)
     
-    is_premium = bot.is_premium_user(user.id)
+    is_premium = arb_bot.is_premium_user(user.id)
     welcome_text = "🎯 Premium" if is_premium else "🔍 Free"
     
     keyboard = [
@@ -1453,7 +1440,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Hello {user.first_name}! 👋\n"
         f"Welcome to the Advanced Crypto Arbitrage Bot\n\n"
         f"🔐 Account: {welcome_text}\n"
-        f"📈 {len(bot.exchanges)} Exchanges Supported\n"
+        f"📈 {len(arb_bot.exchanges)} Exchanges Supported\n"
         f"✅ Security filters active\n"
         f"📊 Volume-based validation\n"
         f"🔍 Suspicious coin detection",
@@ -1499,7 +1486,7 @@ async def handle_arbitrage_check(query):
     await asyncio.sleep(3)
     
     user_id = query.from_user.id
-    is_premium = bot.is_premium_user(user_id)
+    is_premium = arb_bot.is_premium_user(user_id)
     
     opportunities = await bot.get_cached_arbitrage_data(is_premium)
     
@@ -1565,7 +1552,7 @@ async def show_trusted_symbols(query):
 
 async def show_main_menu(query):
     user = query.from_user
-    is_premium = bot.is_premium_user(user.id)
+    is_premium = arb_bot.is_premium_user(user.id)
     welcome_text = "🎯 Premium" if is_premium else "🔍 Free"
     
     keyboard = [
@@ -1582,7 +1569,7 @@ async def show_main_menu(query):
         f"Hello {user.first_name}! 👋\n"
         f"Welcome to the Advanced Crypto Arbitrage Bot\n\n"
         f"🔐 Account: {welcome_text}\n"
-        f"📈 {len(bot.exchanges)} Exchanges Supported\n"
+        f"📈 {len(arb_bot.exchanges)} Exchanges Supported\n"
         f"✅ Security filters active\n"
         f"📊 Volume-based validation\n"
         f"🔍 Suspicious coin detection",
@@ -1662,7 +1649,7 @@ async def handle_license_activation(update: Update, context: ContextTypes.DEFAUL
 
 async def show_premium_info(query):
     user_id = query.from_user.id
-    is_premium = bot.is_premium_user(user_id)
+    is_premium = arb_bot.is_premium_user(user_id)
     
     if is_premium:
         text = """💎 **Premium Member Benefits**
@@ -1684,7 +1671,7 @@ async def show_premium_info(query):
 
 🔄 **Your subscription is active**
 
-📞 **Support:** {}""".format(len(bot.exchanges), len(bot.trusted_symbols), SUPPORT_USERNAME)
+📞 **Support:** {}""".format(len(arb_bot.exchanges), len(bot.trusted_symbols), SUPPORT_USERNAME)
     else:
         text = """💎 **Premium Membership Benefits**
 
@@ -1708,7 +1695,7 @@ async def show_premium_info(query):
 💰 **Get Premium Access:**
 🛒 Purchase subscription below
 
-📞 **Support:** {}""".format(len(bot.exchanges), len(bot.trusted_symbols), SUPPORT_USERNAME)
+📞 **Support:** {}""".format(len(arb_bot.exchanges), len(bot.trusted_symbols), SUPPORT_USERNAME)
     
     if is_premium:
         keyboard = [[InlineKeyboardButton("🔙 Back", callback_data='back')]]
@@ -1751,7 +1738,7 @@ async def show_help(query):
 📊 **Data Sources:**
 Multiple cryptocurrency exchanges with real-time price feeds
 
-📞 **Support:** {}""".format(len(bot.exchanges), SUPPORT_USERNAME)
+📞 **Support:** {}""".format(len(arb_bot.exchanges), SUPPORT_USERNAME)
     
     keyboard = [[InlineKeyboardButton("🔙 Back", callback_data='back')]]
     await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
@@ -2068,7 +2055,7 @@ async def admin_check_command(update: Update, context: ContextTypes.DEFAULT_TYPE
         return
     
     user = update.effective_user
-    bot.save_user(user.id, user.username or "")
+    arb_bot.save_user(user.id, user.username or "")
     
     msg = await update.message.reply_text("🔍 [ADMIN] Scanning exchanges (Huobi excluded, 40% max profit)...")
     
@@ -2133,7 +2120,7 @@ async def handle_affiliate_stats(query):
 async def price_check_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     user_id = user.id
-    is_premium = bot.is_premium_user(user_id)
+    is_premium = arb_bot.is_premium_user(user_id)
     is_admin = (user_id == ADMIN_USER_ID)
 
     if not is_premium and not is_admin:
@@ -2252,14 +2239,14 @@ async def create_affiliate_command(update: Update, context: ContextTypes.DEFAULT
 
 async def check_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
-    bot.save_user(user.id, user.username or "")
+    arb_bot.save_user(user.id, user.username or "")
     
     msg = await update.message.reply_text("🔄 Scanning arbitrage opportunities...")
     
     await asyncio.sleep(3)
     
     all_data = await bot.get_all_prices_with_volume()
-    is_premium = bot.is_premium_user(user.id)
+    is_premium = arb_bot.is_premium_user(user.id)
     
     opportunities = bot.calculate_arbitrage(all_data, is_premium)
     
