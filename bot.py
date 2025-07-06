@@ -1772,6 +1772,41 @@ async def affiliate_stats_command(update: Update, context: ContextTypes.DEFAULT_
     
     await update.message.reply_text(text)
 
+async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Admin broadcast command to send messages to all users"""
+    if update.effective_user.id != ADMIN_USER_ID:
+        await update.message.reply_text("❌ Admin only command.")
+        return
+    
+    if not context.args:
+        await update.message.reply_text("Usage: /broadcast <message>")
+        return
+    
+    message_text = ' '.join(context.args)
+    users = bot.get_all_users()
+    
+    success = 0
+    failed = 0
+    
+    progress_msg = await update.message.reply_text(f"📨 Broadcasting to {len(users)} users...")
+    
+    for user in users:
+        try:
+            await context.bot.send_message(
+                chat_id=user['user_id'],
+                text=f"📢 Admin Broadcast:\n\n{message_text}"
+            )
+            success += 1
+        except Exception as e:
+            failed += 1
+            logger.error(f"Failed to send to user {user['user_id']}: {e}")
+    
+    await progress_msg.edit_text(
+        f"📊 Broadcast Results:\n"
+        f"✅ Successfully sent: {success}\n"
+        f"❌ Failed to send: {failed}"
+    )
+
 async def add_premium_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_USER_ID:
         await update.message.reply_text("❌ Access denied. Admin only command.")
