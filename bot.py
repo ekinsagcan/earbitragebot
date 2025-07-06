@@ -400,18 +400,9 @@ class ArbitrageBot:
             conn = self.get_db_connection()
             with conn.cursor() as cursor:
                 # Tablo oluşturma sorguları burada...
-                pass
-            conn.commit()
-        except Exception as e:
-            logger.error(f"Database initialization error: {e}")
-            if conn:
-                conn.rollback()
-        finally:
-            if conn:
-                conn.close()
-            self.conn = None  # Bağlantıyı temizle
-                
-            cursor.execute('''
+         
+        
+                cursor.execute('''
                     CREATE TABLE IF NOT EXISTS arbitrage_data (
                         id SERIAL PRIMARY KEY,
                         symbol TEXT,
@@ -426,7 +417,7 @@ class ArbitrageBot:
                 ''')
             conn.commit()
 
-            cursor.execute('''
+                cursor.execute('''
                     CREATE TABLE IF NOT EXISTS premium_users (
                         user_id BIGINT PRIMARY KEY,
                         username TEXT,
@@ -437,7 +428,7 @@ class ArbitrageBot:
                 ''')
             conn.commit()
 
-            cursor.execute('''
+                cursor.execute('''
                     CREATE TABLE IF NOT EXISTS license_keys (
                         license_key TEXT PRIMARY KEY,
                         user_id BIGINT,
@@ -448,7 +439,7 @@ class ArbitrageBot:
                 ''')
             conn.commit()
 
-            cursor.execute('''
+                cursor.execute('''
                     CREATE TABLE IF NOT EXISTS affiliates (
                         affiliate_code TEXT PRIMARY KEY,
                         influencer_id BIGINT,
@@ -459,7 +450,7 @@ class ArbitrageBot:
                 ''')
             conn.commit()
 
-            cursor.execute('''
+                cursor.execute('''
                     CREATE TABLE IF NOT EXISTS affiliate_users (
                         user_id BIGINT,
                         affiliate_code TEXT,
