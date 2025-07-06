@@ -1340,6 +1340,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await show_license_activation(query)
     elif query.data == 'send_message' and query.from_user.id == ADMIN_USER_ID:
         await bot.show_send_message_options(query)
+    elif query.data == 'send_message':
+        await show_send_message_options(query)
+    elif query.data.startswith('send_'):
+        await handle_send_message_choice(query)
 
 async def handle_arbitrage_check(query):
     await query.edit_message_text("🔄 Scanning prices across exchanges... (Security filters active)")
