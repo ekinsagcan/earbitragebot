@@ -395,20 +395,22 @@ class ArbitrageBot:
 
     def init_database(self):
         """Initialize PostgreSQL database tables."""
-        conn = self.get_db_connection()
+        conn = None
         try:
+            conn = self.get_db_connection()
             with conn.cursor() as cursor:
-                cursor.execute('''
-                    CREATE TABLE IF NOT EXISTS users (
-                        user_id BIGINT PRIMARY KEY,
-                        username TEXT,
-                        subscription_end DATE,
-                        is_premium BOOLEAN DEFAULT FALSE,
-                        added_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                    )
-                ''')
-                conn.commit()
-
+                # Tablo oluşturma sorguları burada...
+                pass
+            conn.commit()
+        except Exception as e:
+            logger.error(f"Database initialization error: {e}")
+            if conn:
+                conn.rollback()
+        finally:
+            if conn:
+                conn.close()
+            self.conn = None  # Bağlantıyı temizle
+                
                 cursor.execute('''
                     CREATE TABLE IF NOT EXISTS arbitrage_data (
                         id SERIAL PRIMARY KEY,
