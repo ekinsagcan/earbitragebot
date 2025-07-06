@@ -424,7 +424,7 @@ class ArbitrageBot:
                         timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                     )
                 ''')
-                conn.commit()
+            conn.commit()
 
                 cursor.execute('''
                     CREATE TABLE IF NOT EXISTS premium_users (
