@@ -636,6 +636,41 @@ class ArbitrageBot:
         finally:
             if conn:
                 conn.close()
+
+    async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if update.effective_user.id != ADMIN_USER_ID:
+            await update.message.reply_text("❌ Admin only command.")
+            return
+    
+        if not context.args:
+            await update.message.reply_text("Usage: /broadcast <message>")
+            return
+    
+        message = ' '.join(context.args)
+        users = bot.get_all_users()
+    
+        success = 0
+        failed = 0
+    
+        progress_msg = await update.message.reply_text(f"📨 Broadcasting to {len(users)} users...")
+    
+        for user in users:
+            try:
+                await context.bot.send_message(
+                    chat_id=user['user_id'],
+                    text=f"📢 Admin Broadcast:\n\n{message}"
+                )
+                success += 1
+            except Exception as e:
+                failed += 1
+                logger.error(f"Failed to send to {user['user_id']}: {e}")
+    
+        await progress_msg.edit_text(
+            f"📊 Broadcast Results:\n"
+            f"✅ Success: {success}\n"
+            f"❌ Failed: {failed}"
+        )
+
             
     def activate_license_key(self, license_key: str, user_id: int, username: str, sale_data: Dict):
         """Activate license key and add premium subscription in PostgreSQL."""
