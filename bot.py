@@ -435,7 +435,7 @@ class ArbitrageBot:
                         subscription_end DATE
                     )
                 ''')
-                conn.commit()
+            conn.commit()
 
             cursor.execute('''
                     CREATE TABLE IF NOT EXISTS license_keys (
@@ -446,7 +446,7 @@ class ArbitrageBot:
                         gumroad_sale_id TEXT
                     )
                 ''')
-                conn.commit()
+            conn.commit()
 
             cursor.execute('''
                     CREATE TABLE IF NOT EXISTS affiliates (
@@ -457,7 +457,7 @@ class ArbitrageBot:
                         uses INT DEFAULT 0
                     )
                 ''')
-                conn.commit()
+            conn.commit()
 
             cursor.execute('''
                     CREATE TABLE IF NOT EXISTS affiliate_users (
@@ -467,7 +467,7 @@ class ArbitrageBot:
                         PRIMARY KEY (user_id, affiliate_code)
                     )
                 ''')
-                conn.commit()
+            conn.commit()
 
         except Exception as e:
             logger.error(f"Database initialization error: {e}")
