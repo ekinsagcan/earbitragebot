@@ -235,6 +235,24 @@ class ArbitrageBot:
     
         return await self._fetch_fresh_data(is_premium)
 
+    def update_database_schema(self):
+        conn = self.get_db_connection()
+        try:
+            with conn.cursor() as cursor:
+                cursor.execute('''
+                    ALTER TABLE arbitrage_data 
+                    ADD COLUMN IF NOT EXISTS user_id BIGINT,
+                    ADD COLUMN IF NOT EXISTS timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                ''')
+                conn.commit()
+                logger.info("Database schema updated successfully")
+        except Exception as e:
+            logger.error(f"Error updating database schema: {e}")
+            conn.rollback()
+        finally:
+            if conn:
+                conn.close()
+
     async def get_admin_arbitrage_data(self, is_premium: bool = False):
         """Get arbitrage data for admin with higher threshold"""
         original_limit = self.max_profit_threshold
