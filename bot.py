@@ -2,6 +2,7 @@ import os
 import asyncio
 import logging
 import threading
+import signal
 from datetime import datetime, timedelta
 from typing import Dict, List, Tuple, Set
 import aiohttp
@@ -19,11 +20,8 @@ from telegram.ext import (
     filters,
     ContextTypes,
 )
+from telegram.error import Conflict
 
-
-
-# Initialize the ArbitrageBot instance
-arb_bot = ArbitrageBot()
 # Gumroad API settings
 GUMROAD_PRODUCT_ID = os.getenv("GUMROAD_PRODUCT_ID", "")
 GUMROAD_ACCESS_TOKEN = os.getenv("GUMROAD_ACCESS_TOKEN", "")
@@ -75,7 +73,7 @@ class ArbitrageBot:
             'p2pb2b': 'https://api.p2pb2b.com/api/v2/public/tickers'
         }
         
-        # Trusted major cryptocurrencies - these are generally the same across all exchanges
+        # Trusted major cryptocurrencies
         self.trusted_symbols = {
             'BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'ADAUSDT', 'XRPUSDT', 
             'SOLUSDT', 'DOTUSDT', 'DOGEUSDT', 'AVAXUSDT', 'MATICUSDT',
@@ -89,7 +87,7 @@ class ArbitrageBot:
             'ZECUSDT', 'DASHUSDT', 'WAVESUSDT', 'ONTUSDT', 'QTUMUSDT'
         }
         
-        # Suspicious symbols - common names used for different coins
+        # Suspicious symbols
         self.suspicious_symbols = {
             'SUN', 'MOON', 'DOGE', 'SHIB', 'PEPE', 'FLOKI', 'BABY',
             'SAFE', 'MINI', 'MICRO', 'MEGA', 'SUPER', 'ULTRA', 'ELON',
@@ -97,7 +95,7 @@ class ArbitrageBot:
             'RISE', 'FIRE', 'ICE', 'SNOW', 'STORM', 'THUNDER', 'LIGHTNING'
         }
         
-        # Symbol mapping for different exchange formats
+        # Symbol mapping
         self.symbol_mapping = {
             'BTC/USDT': 'BTCUSDT',
             'BTC-USDT': 'BTCUSDT',
@@ -109,76 +107,66 @@ class ArbitrageBot:
             'tETHUSDT': 'ETHUSDT'
         }
         
-        # Minimum 24h volume threshold - filter low volume coins
-        self.min_volume_threshold = 100000  # $100k minimum 24h volume
-        
-        # Maximum profit threshold - very high differences are suspicious
-        self.max_profit_threshold = 20.0  # 20%+ profit is suspicious
-        
-        # Free user maximum profit display
-        self.free_user_max_profit = 2.0  # Show max 2% profit for free users
-        
-        # Premium users cache
-        self.premium_users = set()
-
-        self.affiliate_links = {}
-
-        # Database connection details from environment variable
-        self.DATABASE_URL = os.getenv("DATABASE_URL")
-        if not self.DATABASE_URL:
-            logger.error("DATABASE_URL environment variable not found!")
-            raise ValueError("DATABASE_URL must be set for database connection.")
-
-        self.ensure_tables_exist()
-
-        self.conn = None
-        self._conn = None
-        self._conn_lock = threading.Lock()
-        self.init_database()
-        self.update_arbitrage_table()
-        
-
-
-        self.conn = None
-        self.init_database()
-        self.load_premium_users()
-        self.load_used_license_keys()
-
-        self.max_profit_threshold = 20.0
+        # Thresholds
+        self.min_volume_threshold = 100000  # $100k
+        self.max_profit_threshold = 20.0  # 20%
+        self.free_user_max_profit = 2.0  # 2%
         self.admin_max_profit_threshold = 40.0
 
-        # License key validation cache
+        # Caches
+        self.premium_users = set()
         self.used_license_keys = set()
-        
-        # Cache system
         self.cache_data = {}
         self.cache_timestamp = 0
-        self.cache_duration = 30  # 30 seconds cache
+        self.cache_duration = 30  # seconds
         self.cache_lock = Lock()
         
-        # API request limits
+        # API limits
         self.is_fetching = False
         self.last_fetch_time = 0
-        self.min_fetch_interval = 15  # Minimum 15 seconds between fetches
+        self.min_fetch_interval = 15  # seconds
 
-        # Connection pool
+        # Connection pool with better settings
         self.connector = TCPConnector(
-            limit=50,
+            limit=20,
             limit_per_host=5,
             ttl_dns_cache=300,
-            use_dns_cache=True,
+            force_close=True,
+            enable_cleanup_closed=True
         )
+        self.session_timeout = aiohttp.ClientTimeout(total=30)
         self.session = None
         
-        # Request semaphore (max 10 concurrent requests)
+        # Request semaphore
         self.request_semaphore = asyncio.Semaphore(10)
         
+        # Stats
         self.stats = {
             'cache_hits': 0,
             'cache_misses': 0,
             'api_requests': 0,
             'concurrent_users': 0
         }
+
+        # Database
+        self.DATABASE_URL = os.getenv("DATABASE_URL")
+        if not self.DATABASE_URL:
+            logger.error("DATABASE_URL environment variable not found!")
+            raise ValueError("DATABASE_URL must be set for database connection.")
+
+        self.init_database()
+        self.load_premium_users()
+        self.load_used_license_keys()
+        self.update_arbitrage_table()
+
+    async def close(self):
+        """Clean up resources"""
+        try:
+            self.close_connection()
+            if hasattr(self, 'session') and self.session and not self.session.closed:
+                await self.session.close()
+        except Exception as e:
+            logger.error(f"Error during cleanup: {e}")
 
     def ensure_tables_exist(self):
         """Ensure all required tables exist with correct structure"""
@@ -2268,6 +2256,15 @@ async def check_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await msg.edit_text(text)
 
+ADMIN_USER_ID = int(os.getenv("ADMIN_USER_ID", "0"))
+
+async def shutdown(signal, app):
+    """Cleanup tasks tied to the service's shutdown."""
+    logger.info(f"Received exit signal {signal.name}...")
+    await bot.close()
+    await app.stop()
+    await app.shutdown()
+
 def main():
     TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
     if not TOKEN:
@@ -2282,6 +2279,15 @@ def main():
     
     app = Application.builder().token(TOKEN).post_init(start_background_tasks).build()
     
+    # Signal handlers
+    loop = asyncio.get_event_loop()
+    for s in (signal.SIGTERM, signal.SIGINT):
+        loop.add_signal_handler(
+            s,
+            lambda s=s: asyncio.create_task(shutdown(s, app))
+        )
+
+    # Command handlers
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("check", check_command))
     app.add_handler(CommandHandler("addpremium", add_premium_command))
@@ -2290,23 +2296,27 @@ def main():
     app.add_handler(CommandHandler("stats", stats_command))
     app.add_handler(CommandHandler("admincheck", admin_check_command))
     app.add_handler(CommandHandler("price", price_check_command))
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("broadcast", broadcast_command))  # Yeni handler
+    app.add_handler(CommandHandler("broadcast", broadcast_command))
     app.add_handler(CommandHandler("createaffiliate", create_affiliate_command))
     app.add_handler(CommandHandler("affiliatestats", affiliate_stats_command))
     
+    # Message handlers
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_license_activation))
-    
     app.add_handler(CallbackQueryHandler(button_handler))
 
     try:
         logger.info("Starting bot in polling mode...")
-        app.run_polling(drop_pending_updates=True)
+        app.run_polling(
+            drop_pending_updates=True,
+            close_loop=False,
+            stop_signals=None
+        )
+    except Conflict as e:
+        logger.error(f"Conflict error: {e}. Bot may be running elsewhere.")
     except Exception as e:
         logger.error(f"Bot failed to start: {e}")
     finally:
-        logger.info("Bot stopped")
-        
-    
+        logger.info("Bot shutdown complete")
+
 if __name__ == '__main__':
     main()
