@@ -119,6 +119,7 @@ class ArbitrageBot:
         self.affiliate_links = {}
 
         self.conn = None
+        self._conn_lock = threading.Lock()
 
         self.init_database()
         self.update_arbitrage_table()
@@ -171,23 +172,41 @@ class ArbitrageBot:
         }
 
     def get_db_connection(self):
-        """Get or create a PostgreSQL database connection."""
-        if self.conn is None or self.conn.closed:
-            try:
-                url = urlparse(self.DATABASE_URL)
-                self.conn = psycopg2.connect(
-                    host=url.hostname,
-                    port=url.port,
-                    user=url.username,
-                    password=url.password,
-                    database=url.path[1:]
-                )
-                logger.info("Successfully connected to PostgreSQL database.")
-            except Exception as e:
-                logger.error(f"Error connecting to PostgreSQL: {e}")
-                raise
-        return self.conn
+        """Thread-safe database connection getter"""
+        with self._conn_lock:
+            if self._conn is None or self._conn.closed:
+                try:
+                    url = urlparse(self.DATABASE_URL)
+                    self._conn = psycopg2.connect(
+                        host=url.hostname,
+                        port=url.port,
+                        user=url.username,
+                        password=url.password,
+                        database=url.path[1:],
+                        connect_timeout=5
+                    )
+                    logger.info("Database connection established")
+                except Exception as e:
+                    logger.error(f"Database connection failed: {e}")
+                    raise
+            return self._conn
 
+    def close_connection(self):
+        """Clean up database connection"""
+        with self._conn_lock:
+            if self._conn is not None:
+                try:
+                    self._conn.close()
+                    logger.info("Database connection closed")
+                except Exception as e:
+                    logger.error(f"Error closing connection: {e}")
+                finally:
+                    self._conn = None
+
+    def __del__(self):
+        """Destructor to ensure connection is closed"""
+        self.close_connection()
+        
     def get_all_users(self) -> List[Dict]:
         """Get all users from database"""
         conn = self.get_db_connection()
