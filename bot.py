@@ -2,14 +2,13 @@ import os
 import asyncio
 import logging
 from datetime import datetime, timedelta
-from typing import Dict, List, Tuple, Set, Optional
+from typing import Dict, List, Tuple, Set
 import aiohttp
 from aiohttp import TCPConnector
-import psycopg2
-from urllib.parse import urlparse, parse_qs
+import psycopg2 # PostgreSQL için yeni import
+from urllib.parse import urlparse # DATABASE_URL'yi parse etmek için yeni import
 import time
 from threading import Lock
-import uuid
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
@@ -71,7 +70,7 @@ class ArbitrageBot:
             'p2pb2b': 'https://api.p2pb2b.com/api/v2/public/tickers'
         }
         
-        # Trusted major cryptocurrencies
+        # Trusted major cryptocurrencies - these are generally the same across all exchanges
         self.trusted_symbols = {
             'BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'ADAUSDT', 'XRPUSDT', 
             'SOLUSDT', 'DOTUSDT', 'DOGEUSDT', 'AVAXUSDT', 'MATICUSDT',
@@ -85,7 +84,7 @@ class ArbitrageBot:
             'ZECUSDT', 'DASHUSDT', 'WAVESUSDT', 'ONTUSDT', 'QTUMUSDT'
         }
         
-        # Suspicious symbols
+        # Suspicious symbols - common names used for different coins
         self.suspicious_symbols = {
             'SUN', 'MOON', 'DOGE', 'SHIB', 'PEPE', 'FLOKI', 'BABY',
             'SAFE', 'MINI', 'MICRO', 'MEGA', 'SUPER', 'ULTRA', 'ELON',
@@ -93,7 +92,7 @@ class ArbitrageBot:
             'RISE', 'FIRE', 'ICE', 'SNOW', 'STORM', 'THUNDER', 'LIGHTNING'
         }
         
-        # Symbol mapping
+        # Symbol mapping for different exchange formats
         self.symbol_mapping = {
             'BTC/USDT': 'BTCUSDT',
             'BTC-USDT': 'BTCUSDT',
@@ -105,45 +104,56 @@ class ArbitrageBot:
             'tETHUSDT': 'ETHUSDT'
         }
         
-        # Thresholds
-        self.min_volume_threshold = 100000
-        self.max_profit_threshold = 20.0
-        self.free_user_max_profit = 2.0
-        self.admin_max_profit_threshold = 40.0
-
-        # Database connection
+        # Minimum 24h volume threshold - filter low volume coins
+        self.min_volume_threshold = 100000  # $100k minimum 24h volume
+        
+        # Maximum profit threshold - very high differences are suspicious
+        self.max_profit_threshold = 20.0  # 20%+ profit is suspicious
+        
+        # Free user maximum profit display
+        self.free_user_max_profit = 2.0  # Show max 2% profit for free users
+        
+        # Premium users cache
+        self.premium_users = set()
+        
+        # Database connection details from environment variable
         self.DATABASE_URL = os.getenv("DATABASE_URL")
         if not self.DATABASE_URL:
             logger.error("DATABASE_URL environment variable not found!")
             raise ValueError("DATABASE_URL must be set for database connection.")
 
-        self.conn = None
+        self.conn = None # We will establish connection when needed
         self.init_database()
-        self._load_premium_users()
-        self._load_used_license_keys()
-        self._load_affiliates()
+        self.load_premium_users()
+        self.load_used_license_keys()
 
-        # Cache system
+        self.max_profit_threshold = 20.0  # Normal kullanıcılar için %20 limit
+        self.admin_max_profit_threshold = 40.0 # Adminler için %40 limit (önceki komuttan kalma, şu an yeni komutta kullanılmayacak)
+
+        # License key validation cache
+        self.used_license_keys = set()
+        
+        # Cache sistemi
         self.cache_data = {}
         self.cache_timestamp = 0
-        self.cache_duration = 30
+        self.cache_duration = 30  # 30 saniye cache
         self.cache_lock = Lock()
         
-        # API request limits
+        # API request limitleri
         self.is_fetching = False
         self.last_fetch_time = 0
-        self.min_fetch_interval = 15
+        self.min_fetch_interval = 15  # Minimum 15 saniye arayla fetch
 
         # Connection pool
         self.connector = TCPConnector(
-            limit=50,
-            limit_per_host=5,
+            limit=50,  # Toplam connection sayısı
+            limit_per_host=5,  # Her host için max connection
             ttl_dns_cache=300,
             use_dns_cache=True,
         )
         self.session = None
         
-        # Request semaphore
+        # Request semaphore (aynı anda max 10 request)
         self.request_semaphore = asyncio.Semaphore(10)
         
         self.stats = {
@@ -153,21 +163,18 @@ class ArbitrageBot:
             'concurrent_users': 0
         }
 
-        # Affiliate tracking
-        self.affiliates = {}  # affiliate_id: {name, user_id, date_added, referred_users, activated_licenses}
-        self.user_affiliate_map = {}  # user_id: affiliate_id
-
     def get_db_connection(self):
         """Get or create a PostgreSQL database connection."""
         if self.conn is None or self.conn.closed:
             try:
+                # Parse the DATABASE_URL to get individual components
                 url = urlparse(self.DATABASE_URL)
                 self.conn = psycopg2.connect(
                     host=url.hostname,
                     port=url.port,
                     user=url.username,
                     password=url.password,
-                    database=url.path[1:]
+                    database=url.path[1:] # Slice to remove the leading '/'
                 )
                 logger.info("Successfully connected to PostgreSQL database.")
             except Exception as e:
@@ -175,42 +182,88 @@ class ArbitrageBot:
                 raise
         return self.conn
 
-    async def cache_refresh_task(self):
-        """Her 25 saniyede bir cache'i yenile"""
-        while True:
-            try:
-                await asyncio.sleep(25)  # 25 saniye bekle
-            
-                # Sadece cache eski ise yenile
-                current_time = time.time()
-                if (current_time - self.cache_timestamp) > 20:  # Cache 20 saniyeden eski ise
-                    logger.info("Background cache refresh")
-                    await self._fetch_fresh_data(False)
-                
-            except Exception as e:
-                logger.error(f"Background cache refresh error: {e}")
-                await asyncio.sleep(60)  # Hata durumunda 1 dakika bekle
+    async def get_cached_arbitrage_data(self, is_premium: bool = False):
+        # Cache hit/miss sayacı
+        if self.cache_data and (time.time() - self.cache_timestamp) < self.cache_duration:
+            self.stats['cache_hits'] += 1
+        else:
+            self.stats['cache_misses'] += 1
 
+    async def get_admin_arbitrage_data(self, is_premium: bool = False):
+        """Adminler için Huobi hariç ve yüksek limitli arbitraj verisi getir"""
+        # Orijinal limiti sakla
+        original_limit = self.max_profit_threshold
+    
+        try:
+            # Admin limitini geçici olarak ayarla
+            self.max_profit_threshold = self.admin_max_profit_threshold
+        
+            current_time = time.time()
+            with self.cache_lock:
+                if (current_time - self.cache_timestamp) < self.cache_duration and self.cache_data:
+                    logger.info("Returning cached data for admin")
+                    # Huobi verilerini filtrele
+                    filtered_data = {ex: data for ex, data in self.cache_data.items() if ex != 'huobi'}
+                    return self.calculate_arbitrage(filtered_data, True)  # Admin olduğu için premium=True
+
+            # Yeni veri çek
+            all_data = await self.get_all_prices_with_volume()
+            # Huobi verilerini filtrele
+            filtered_data = {ex: data for ex, data in all_data.items() if ex != 'huobi'}
+        
+            return self.calculate_arbitrage(filtered_data, True)  # Admin olduğu için premium=True
+    
+        finally:
+            # Orijinal limiti geri yükle
+            self.max_profit_threshold = original_limit
+
+    async def get_session(self):
+        """Paylaşılan session döndür"""
+        if self.session is None or self.session.closed:
+            timeout = aiohttp.ClientTimeout(total=10, connect=5)
+            self.session = aiohttp.ClientSession(
+                connector=self.connector,
+                timeout=timeout,
+                headers={'User-Agent': 'ArbitrageBot/1.0'}
+            )
+        return self.session
+
+    async def fetch_prices_with_volume(self, exchange: str) -> Dict[str, Dict]:
+        """Rate limited price fetch"""
+        async with self.request_semaphore:
+            try:
+                session = await self.get_session()
+                url = self.exchanges[exchange]
+                
+                async with session.get(url) as response:
+                    if response.status != 200:
+                        logger.warning(f"{exchange} returned status {response.status}")
+                        return {}
+                    
+                    data = await response.json()
+                    return self.parse_exchange_data(exchange, data)
+                    
+            except Exception as e:
+                logger.error(f"{exchange} error: {str(e)}")
+                return {}
+    
     def init_database(self):
         """Initialize PostgreSQL database tables."""
         conn = self.get_db_connection()
         try:
             with conn.cursor() as cursor:
-                # Existing tables
                 cursor.execute('''
                     CREATE TABLE IF NOT EXISTS users (
-                        user_id BIGINT PRIMARY KEY,
+                        user_id BIGINT PRIMARY KEY, -- Use BIGINT for user_id
                         username TEXT,
                         subscription_end DATE,
                         is_premium BOOLEAN DEFAULT FALSE,
-                        added_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                        last_active TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                        affiliate_id TEXT
+                        added_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                     )
                 ''')
                 cursor.execute('''
                     CREATE TABLE IF NOT EXISTS arbitrage_data (
-                        id SERIAL PRIMARY KEY,
+                        id SERIAL PRIMARY KEY, -- SERIAL for auto-incrementing ID
                         symbol TEXT,
                         exchange1 TEXT,
                         exchange2 TEXT,
@@ -232,51 +285,39 @@ class ArbitrageBot:
                 ''')
                 cursor.execute('''
                     CREATE TABLE IF NOT EXISTS license_keys (
-                        license_key TEXT PRIMARY KEY,
-                        user_id BIGINT,
-                        username TEXT,
-                        used_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                        gumroad_sale_id TEXT
-                    )
-                ''')
-                # New tables for affiliate system
-                cursor.execute('''
-                    CREATE TABLE IF NOT EXISTS affiliates (
-                        affiliate_id TEXT PRIMARY KEY,
-                        name TEXT NOT NULL,
-                        user_id BIGINT,
-                        date_added TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                        referred_users INT DEFAULT 0,
-                        activated_licenses INT DEFAULT 0
-                    )
-                ''')
-                # Table for admin messages
-                cursor.execute('''
-                    CREATE TABLE IF NOT EXISTS admin_messages (
-                        id SERIAL PRIMARY KEY,
-                        admin_id BIGINT,
-                        message_text TEXT,
-                        target_type TEXT, -- 'all', 'free', 'premium', 'specific'
-                        target_user_id BIGINT,
-                        sent_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                    )
-                ''')
-                # Table for user activity tracking
-                cursor.execute('''
-                    CREATE TABLE IF NOT EXISTS user_activity (
-                        user_id BIGINT,
-                        activity_date DATE,
-                        command_count INT DEFAULT 0,
-                        PRIMARY KEY (user_id, activity_date)
+                         license_key TEXT PRIMARY KEY,
+                         user_id BIGINT,
+                         username TEXT,
+                         used_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                         gumroad_sale_id TEXT
                     )
                 ''')
             conn.commit()
             logger.info("PostgreSQL tables initialized or already exist.")
         except Exception as e:
             logger.error(f"Error initializing database: {e}")
-            conn.rollback()
+            conn.rollback() # Rollback in case of error
+        finally:
+            # No need to close connection here, get_db_connection handles it
+            pass
 
-    def _load_premium_users(self):
+    async def cache_refresh_task(self):
+        """Her 25 saniyede bir cache'i yenile"""
+        while True:
+            try:
+                await asyncio.sleep(25)  # 25 saniye bekle
+            
+                # Sadece cache eski ise yenile
+                current_time = time.time()
+                if (current_time - self.cache_timestamp) > 20:  # Cache 20 saniyeden eski ise
+                    logger.info("Background cache refresh")
+                    await self._fetch_fresh_data(False)
+                
+            except Exception as e:
+                logger.error(f"Background cache refresh error: {e}")
+                await asyncio.sleep(60)  # Hata durumunda 1 dakika bekle
+    
+    def load_premium_users(self):
         """Load premium users into memory from PostgreSQL."""
         conn = self.get_db_connection()
         try:
@@ -287,9 +328,9 @@ class ArbitrageBot:
                 logger.info(f"Loaded {len(self.premium_users)} premium users from PostgreSQL.")
         except Exception as e:
             logger.error(f"Error loading premium users: {e}")
-            self.premium_users = set()
+            self.premium_users = set() # Ensure it's still a set if error occurs
 
-    def _load_used_license_keys(self):
+    def load_used_license_keys(self):
         """Load used license keys into memory from PostgreSQL."""
         conn = self.get_db_connection()
         try:
@@ -297,613 +338,614 @@ class ArbitrageBot:
                 cursor.execute('SELECT license_key FROM license_keys')
                 results = cursor.fetchall()
                 self.used_license_keys = {row[0] for row in results}
-                logger.info(f"Loaded {len(self.used_license_keys)} used license keys from PostgreSQL.")
         except Exception as e:
             logger.error(f"Error loading used license keys: {e}")
-            self.used_license_keys = set()
+            self.used_license_keys = set() # Ensure it's still a set if error occurs
 
-    def _load_affiliates(self):
-        """Load affiliates from database into memory."""
-        conn = self.get_db_connection()
+    async def verify_gumroad_license(self, license_key: str) -> Dict:
+        """Verify license key with Gumroad API"""
         try:
-            with conn.cursor() as cursor:
-                cursor.execute('SELECT affiliate_id, name, user_id, date_added, referred_users, activated_licenses FROM affiliates')
-                results = cursor.fetchall()
-                for row in results:
-                    self.affiliates[row[0]] = {
-                        'name': row[1],
-                        'user_id': row[2],
-                        'date_added': row[3],
-                        'referred_users': row[4],
-                        'activated_licenses': row[5]
-                    }
-                
-                # Load user-affiliate mapping
-                cursor.execute('SELECT user_id, affiliate_id FROM users WHERE affiliate_id IS NOT NULL')
-                results = cursor.fetchall()
-                for row in results:
-                    self.user_affiliate_map[row[0]] = row[1]
-                
-                logger.info(f"Loaded {len(self.affiliates)} affiliates and {len(self.user_affiliate_map)} user-affiliate mappings")
-        except Exception as e:
-            logger.error(f"Error loading affiliates: {e}")
-
-    def create_affiliate(self, name: str, user_id: Optional[int] = None) -> str:
-        """Create a new affiliate and return the affiliate ID."""
-        affiliate_id = str(uuid.uuid4())
-        conn = self.get_db_connection()
-        try:
-            with conn.cursor() as cursor:
-                cursor.execute('''
-                    INSERT INTO affiliates (affiliate_id, name, user_id)
-                    VALUES (%s, %s, %s)
-                ''', (affiliate_id, name, user_id))
-            conn.commit()
-            
-            self.affiliates[affiliate_id] = {
-                'name': name,
-                'user_id': user_id,
-                'date_added': datetime.now(),
-                'referred_users': 0,
-                'activated_licenses': 0
+            # Debug: Environment variables kontrolü
+            logger.info(f"GUMROAD_PRODUCT_ID: {GUMROAD_PRODUCT_ID}")
+            logger.info(f"GUMROAD_ACCESS_TOKEN: {'SET' if GUMROAD_ACCESS_TOKEN else 'EMPTY'}")
+        
+            headers = {
+                'Authorization': f'Bearer {GUMROAD_ACCESS_TOKEN}',
+                'Content-Type': 'application/json'
             }
+    
+            url = f"https://api.gumroad.com/v2/licenses/verify"
+            data = {
+                'product_id': GUMROAD_PRODUCT_ID,
+                'license_key': license_key,
+                'increment_uses_count': 'false'
+            }
+        
+            # Debug: Request bilgilerini log'la
+            logger.info(f"Verifying license: {license_key}")
+            logger.info(f"Request URL: {url}")
+            logger.info(f"Request data: {data}")
+    
+            async with aiohttp.ClientSession() as session:
+                async with session.post(url, headers=headers, json=data) as response:
+                    response_text = await response.text()
+                
+                    # Debug: Response bilgilerini log'la
+                    logger.info(f"Response status: {response.status}")
+                    logger.info(f"Response text: {response_text}")
+                
+                    if response.status == 200:
+                        result = await response.json()
+                        logger.info(f"Response JSON: {result}")
+                        return result
+                    else:
+                        logger.error(f"Gumroad API error: {response.status} - {response_text}")
+                        return {'success': False, 'error': f'API Error: {response.status}'}
+        
+        except Exception as e:
+            logger.error(f"License verification error: {str(e)}")
+            return {'success': False, 'error': str(e)}
             
-            logger.info(f"Created new affiliate: {name} (ID: {affiliate_id})")
-            return affiliate_id
-        except Exception as e:
-            logger.error(f"Error creating affiliate: {e}")
-            conn.rollback()
-            return ""
-
-    def track_referral(self, user_id: int, affiliate_id: str):
-        """Track a user referral by an affiliate."""
-        if affiliate_id not in self.affiliates:
-            logger.warning(f"Invalid affiliate ID: {affiliate_id}")
-            return
-        
+    def activate_license_key(self, license_key: str, user_id: int, username: str, sale_data: Dict):
+        """Activate license key and add premium subscription in PostgreSQL."""
         conn = self.get_db_connection()
         try:
             with conn.cursor() as cursor:
-                # Update user's affiliate reference
+                # Save license key usage
                 cursor.execute('''
-                    UPDATE users SET affiliate_id = %s 
-                    WHERE user_id = %s AND affiliate_id IS NULL
-                ''', (affiliate_id, user_id))
-                
-                # Only count if this is a new referral
-                if cursor.rowcount > 0:
-                    # Update affiliate stats
-                    cursor.execute('''
-                        UPDATE affiliates SET referred_users = referred_users + 1 
-                        WHERE affiliate_id = %s
-                    ''', (affiliate_id,))
-                    
-                    # Update in-memory cache
-                    self.affiliates[affiliate_id]['referred_users'] += 1
-                    self.user_affiliate_map[user_id] = affiliate_id
-                    
-                    conn.commit()
-                    logger.info(f"Tracked referral for user {user_id} by affiliate {affiliate_id}")
-        except Exception as e:
-            logger.error(f"Error tracking referral: {e}")
-            conn.rollback()
-
-    def track_license_activation(self, user_id: int):
-        """Track a license activation for affiliate tracking."""
-        if user_id not in self.user_affiliate_map:
-            return
-        
-        affiliate_id = self.user_affiliate_map[user_id]
-        conn = self.get_db_connection()
-        try:
-            with conn.cursor() as cursor:
-                cursor.execute('''
-                    UPDATE affiliates SET activated_licenses = activated_licenses + 1 
-                    WHERE affiliate_id = %s
-                ''', (affiliate_id,))
-                
-                # Update in-memory cache
-                self.affiliates[affiliate_id]['activated_licenses'] += 1
-                
-                conn.commit()
-                logger.info(f"Tracked license activation for user {user_id} by affiliate {affiliate_id}")
-        except Exception as e:
-            logger.error(f"Error tracking license activation: {e}")
-            conn.rollback()
-
-    def get_affiliate_stats(self, affiliate_id: str) -> Optional[Dict]:
-        """Get affiliate statistics."""
-        if affiliate_id not in self.affiliates:
-            return None
-        
-        conn = self.get_db_connection()
-        try:
-            with conn.cursor() as cursor:
-                cursor.execute('''
-                    SELECT COUNT(*) FROM users 
-                    WHERE affiliate_id = %s AND is_premium = TRUE
-                ''', (affiliate_id,))
-                premium_conversions = cursor.fetchone()[0]
-                
-                return {
-                    'name': self.affiliates[affiliate_id]['name'],
-                    'referred_users': self.affiliates[affiliate_id]['referred_users'],
-                    'activated_licenses': self.affiliates[affiliate_id]['activated_licenses'],
-                    'premium_conversions': premium_conversions,
-                    'conversion_rate': (premium_conversions / self.affiliates[affiliate_id]['referred_users'] * 100 
-                                      if self.affiliates[affiliate_id]['referred_users'] > 0 else 0)
-                }
-        except Exception as e:
-            logger.error(f"Error getting affiliate stats: {e}")
-            return None
-
-    def get_all_affiliates(self) -> List[Dict]:
-        """Get list of all affiliates with their stats."""
-        conn = self.get_db_connection()
-        try:
-            with conn.cursor() as cursor:
-                cursor.execute('''
-                    SELECT a.affiliate_id, a.name, a.user_id, a.date_added, a.referred_users, a.activated_licenses,
-                           COUNT(u.user_id) FILTER (WHERE u.is_premium = TRUE) as premium_conversions
-                    FROM affiliates a
-                    LEFT JOIN users u ON a.affiliate_id = u.affiliate_id
-                    GROUP BY a.affiliate_id, a.name, a.user_id, a.date_added, a.referred_users, a.activated_licenses
-                    ORDER BY a.referred_users DESC
-                ''')
-                results = cursor.fetchall()
-                return [
-                    {
-                        'affiliate_id': row[0],
-                        'name': row[1],
-                        'user_id': row[2],
-                        'date_added': row[3],
-                        'referred_users': row[4],
-                        'activated_licenses': row[5],
-                        'premium_conversions': row[6],
-                        'conversion_rate': (row[6] / row[4] * 100 if row[4] > 0 else 0)
-                    } for row in results
-                ]
-        except Exception as e:
-            logger.error(f"Error getting all affiliates: {e}")
-            return []
-
-    def log_user_activity(self, user_id: int):
-        """Log user activity for statistics."""
-        today = datetime.now().date()
-        conn = self.get_db_connection()
-        try:
-            with conn.cursor() as cursor:
-                cursor.execute('''
-                    INSERT INTO user_activity (user_id, activity_date, command_count)
-                    VALUES (%s, %s, 1)
-                    ON CONFLICT (user_id, activity_date) 
-                    DO UPDATE SET command_count = user_activity.command_count + 1
-                ''', (user_id, today))
-                
-                # Also update last active timestamp in users table
-                cursor.execute('''
-                    UPDATE users SET last_active = CURRENT_TIMESTAMP
-                    WHERE user_id = %s
-                ''', (user_id,))
-                
-                conn.commit()
-        except Exception as e:
-            logger.error(f"Error logging user activity: {e}")
-            conn.rollback()
-
-    def get_active_users(self, days: int = 7, limit: int = 10) -> List[Dict]:
-        """Get most active users in the last N days."""
-        conn = self.get_db_connection()
-        try:
-            with conn.cursor() as cursor:
-                cursor.execute('''
-                    SELECT u.user_id, u.username, SUM(ua.command_count) as total_commands
-                    FROM user_activity ua
-                    JOIN users u ON ua.user_id = u.user_id
-                    WHERE ua.activity_date >= CURRENT_DATE - INTERVAL '%s days'
-                    GROUP BY u.user_id, u.username
-                    ORDER BY total_commands DESC
-                    LIMIT %s
-                ''', (days, limit))
-                results = cursor.fetchall()
-                return [
-                    {
-                        'user_id': row[0],
-                        'username': row[1] or 'Unknown',
-                        'activity_count': row[2]
-                    } for row in results
-                ]
-        except Exception as e:
-            logger.error(f"Error getting active users: {e}")
-            return []
-
-    def get_user_growth(self, days: int = 30) -> Dict:
-        """Get user growth statistics."""
-        conn = self.get_db_connection()
-        try:
-            with conn.cursor() as cursor:
-                # Total users
-                cursor.execute('SELECT COUNT(*) FROM users')
-                total_users = cursor.fetchone()[0]
-                
-                # New users today
-                cursor.execute('''
-                    SELECT COUNT(*) FROM users 
-                    WHERE added_date::date = CURRENT_DATE
-                ''')
-                new_users_today = cursor.fetchone()[0]
-                
-                # New users this week
-                cursor.execute('''
-                    SELECT COUNT(*) FROM users 
-                    WHERE added_date >= CURRENT_DATE - INTERVAL '7 days'
-                ''')
-                new_users_week = cursor.fetchone()[0]
-                
-                # New users this month
-                cursor.execute('''
-                    SELECT COUNT(*) FROM users 
-                    WHERE added_date >= CURRENT_DATE - INTERVAL '30 days'
-                ''')
-                new_users_month = cursor.fetchone()[0]
-                
-                # Premium users
-                cursor.execute('SELECT COUNT(*) FROM premium_users')
-                premium_users = cursor.fetchone()[0]
-                
-                # Daily growth for chart
-                cursor.execute('''
-                    SELECT added_date::date as day, COUNT(*) as count
-                    FROM users
-                    WHERE added_date >= CURRENT_DATE - INTERVAL '%s days'
-                    GROUP BY day
-                    ORDER BY day
-                ''', (days,))
-                daily_growth = cursor.fetchall()
-                
-                return {
-                    'total_users': total_users,
-                    'new_users_today': new_users_today,
-                    'new_users_week': new_users_week,
-                    'new_users_month': new_users_month,
-                    'premium_users': premium_users,
-                    'daily_growth': [{'date': row[0], 'count': row[1]} for row in daily_growth]
-                }
-        except Exception as e:
-            logger.error(f"Error getting user growth: {e}")
-            return {}
-
-    def save_admin_message(self, admin_id: int, message_text: str, target_type: str, target_user_id: Optional[int] = None):
-        """Save admin message to database."""
-        conn = self.get_db_connection()
-        try:
-            with conn.cursor() as cursor:
-                cursor.execute('''
-                    INSERT INTO admin_messages (admin_id, message_text, target_type, target_user_id)
+                    INSERT INTO license_keys 
+                    (license_key, user_id, username, gumroad_sale_id)
                     VALUES (%s, %s, %s, %s)
-                ''', (admin_id, message_text, target_type, target_user_id))
+                ''', (license_key, user_id, username, sale_data.get('sale_id', '')))
+                
+                # Add premium subscription (30 days)
+                end_date = (datetime.now() + timedelta(days=30)).strftime('%Y-%m-%d')
+                cursor.execute('''
+                    INSERT INTO premium_users 
+                    (user_id, username, subscription_end)
+                    VALUES (%s, %s, %s)
+                    ON CONFLICT (user_id) DO UPDATE SET 
+                        username = EXCLUDED.username,
+                        subscription_end = EXCLUDED.subscription_end,
+                        added_date = CURRENT_TIMESTAMP
+                ''', (user_id, username, end_date))
+                
             conn.commit()
+            
+            # Update memory cache
+            self.used_license_keys.add(license_key)
+            self.premium_users.add(user_id)
+            
+            logger.info(f"License activated: {license_key} for user {user_id}.")
         except Exception as e:
-            logger.error(f"Error saving admin message: {e}")
-            conn.rollback()
-
-    def get_users_to_notify(self, target_type: str, target_user_id: Optional[int] = None) -> List[int]:
-        """Get list of user IDs to notify based on target type."""
+            logger.error(f"Error activating license key: {e}")
+            conn.rollback() # Rollback changes if an error occurs
+    
+    def add_premium_user(self, user_id: int, username: str = "", days: int = 30):
+        """Add premium user (admin command) to PostgreSQL."""
         conn = self.get_db_connection()
         try:
             with conn.cursor() as cursor:
-                if target_type == 'all':
-                    cursor.execute('SELECT user_id FROM users')
-                elif target_type == 'free':
-                    cursor.execute('''
-                        SELECT user_id FROM users 
-                        WHERE user_id NOT IN (SELECT user_id FROM premium_users)
-                    ''')
-                elif target_type == 'premium':
-                    cursor.execute('SELECT user_id FROM premium_users')
-                elif target_type == 'specific' and target_user_id:
-                    return [target_user_id]
-                
-                results = cursor.fetchall()
-                return [row[0] for row in results]
+                end_date = (datetime.now() + timedelta(days=days)).strftime('%Y-%m-%d')
+                cursor.execute('''
+                    INSERT INTO premium_users 
+                    (user_id, username, subscription_end)
+                    VALUES (%s, %s, %s)
+                    ON CONFLICT (user_id) DO UPDATE SET 
+                        username = EXCLUDED.username,
+                        subscription_end = EXCLUDED.subscription_end,
+                        added_date = CURRENT_TIMESTAMP
+                ''', (user_id, username, end_date))
+            conn.commit()
+            self.premium_users.add(user_id)
+            logger.info(f"Added premium user: {user_id} (@{username}) for {days} days to PostgreSQL.")
         except Exception as e:
-            logger.error(f"Error getting users to notify: {e}")
-            return []
+            logger.error(f"Error adding premium user: {e}")
+            conn.rollback()
 
+    def remove_premium_user(self, user_id: int):
+        """Remove premium user (admin command) from PostgreSQL."""
+        conn = self.get_db_connection()
+        try:
+            with conn.cursor() as cursor:
+                cursor.execute('DELETE FROM premium_users WHERE user_id = %s', (user_id,))
+                conn.commit()
+                self.premium_users.discard(user_id)
+        except Exception as e:
+            logger.error(f"Error removing premium user: {e}")
+            conn.rollback()
+    
+    def normalize_symbol(self, symbol: str, exchange: str) -> str:
+        """Normalize symbol format across exchanges"""
+        # Remove common separators and convert to standard format
+        normalized = symbol.upper().replace('/', '').replace('-', '').replace('_', '')
+        
+        # Handle exchange-specific prefixes
+        if exchange == 'bitfinex' and normalized.startswith('T'):
+            normalized = normalized[1:]  # Remove 't' prefix
+        
+        # Handle specific mappings
+        if symbol in self.symbol_mapping:
+            normalized = self.symbol_mapping[symbol]
+        
+        return normalized
+    
+    async def fetch_prices_with_volume(self, exchange: str) -> Dict[str, Dict]:
+        """Fetch prices and volumes from exchange"""
+        async with self.request_semaphore: # This semaphore is correctly used here
+            try:
+                session = await self.get_session() # Use the shared session
+                url = self.exchanges[exchange]
+                
+                headers = {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+                }
+                
+                async with session.get(url, headers=headers) as response:
+                    if response.status != 200:
+                        logger.warning(f"{exchange} returned status {response.status}")
+                        return {}
+                    
+                    data = await response.json()
+                    return self.parse_exchange_data(exchange, data)
+                    
+            except Exception as e:
+                logger.error(f"{exchange} price/volume error: {str(e)}")
+                return {}
+    
+    def parse_exchange_data(self, exchange: str, data) -> Dict[str, Dict]:
+        """Parse exchange-specific data format"""
+        try:
+            if exchange == 'binance':
+                return {
+                    self.normalize_symbol(item['symbol'], exchange): {
+                        'price': float(item['lastPrice']),
+                        'volume': float(item['quoteVolume']),
+                        'count': int(item['count'])
+                    } for item in data 
+                    if float(item['quoteVolume']) > self.min_volume_threshold
+                }
+            
+            elif exchange == 'kucoin':
+                if 'data' in data and 'ticker' in data['data']:
+                    return {
+                        self.normalize_symbol(item['symbol'], exchange): {
+                            'price': float(item['last']),
+                            'volume': float(item['volValue']) if item['volValue'] else 0
+                        } for item in data['data']['ticker'] 
+                        if item['volValue'] and float(item['volValue']) > self.min_volume_threshold
+                    }
+            
+            elif exchange == 'gate':
+                return {
+                    self.normalize_symbol(item['currency_pair'], exchange): {
+                        'price': float(item['last']),
+                        'volume': float(item['quote_volume']) if item['quote_volume'] else 0
+                    } for item in data 
+                    if item['quote_volume'] and float(item['quote_volume']) > self.min_volume_threshold
+                }
+            
+            elif exchange == 'mexc':
+                return {
+                    self.normalize_symbol(item['symbol'], exchange): {
+                        'price': float(item['lastPrice']),
+                        'volume': float(item['quoteVolume'])
+                    } for item in data 
+                    if float(item.get('quoteVolume', 0)) > self.min_volume_threshold
+                }
+            
+            elif exchange == 'bybit':
+                if 'result' in data and 'list' in data['result']:
+                    return {
+                        self.normalize_symbol(item['symbol'], exchange): {
+                            'price': float(item['lastPrice']),
+                            'volume': float(item['turnover24h']) if item['turnover24h'] else 0
+                        } for item in data['result']['list'] 
+                        if item['turnover24h'] and float(item['turnover24h']) > self.min_volume_threshold
+                    }
+            
+            elif exchange == 'okx':
+                if 'data' in data:
+                    return {
+                        self.normalize_symbol(item['instId'], exchange): {
+                            'price': float(item['last']),
+                            'volume': float(item['volCcy24h']) if item['volCcy24h'] else 0
+                        } for item in data['data'] 
+                        if item['volCcy24h'] and float(item['volCcy24h']) > self.min_volume_threshold
+                    }
+            
+            elif exchange == 'huobi':
+                if 'data' in data:
+                    return {
+                        self.normalize_symbol(item['symbol'], exchange): {
+                            'price': float(item['close']),
+                            'volume': float(item['vol']) if item['vol'] else 0
+                        } for item in data['data'] 
+                        if item['vol'] and float(item['vol']) > self.min_volume_threshold / 100
+                    }
+            
+            elif exchange == 'bitget':
+                if 'data' in data:
+                    return {
+                        self.normalize_symbol(item['symbol'], exchange): {
+                            'price': float(item['close']),
+                            'volume': float(item['quoteVol']) if item['quoteVol'] else 0
+                        } for item in data['data'] 
+                        if item['quoteVol'] and float(item['quoteVol']) > self.min_volume_threshold
+                    }
+            
+            elif exchange == 'bitfinex':
+                if isinstance(data, list):
+                    result = {}
+                    for item in data:
+                        if len(item) >= 8:
+                            symbol = self.normalize_symbol(item[0], exchange)
+                            if item[7] and float(item[7]) > self.min_volume_threshold:
+                                result[symbol] = {
+                                    'price': float(item[6]),
+                                    'volume': float(item[7])
+                                }
+                    return result
+            
+            elif exchange == 'kraken':
+                result = {}
+                for symbol, ticker_data in data.get('result', {}).items():
+                    if 'c' in ticker_data and 'v' in ticker_data:
+                        normalized_symbol = self.normalize_symbol(symbol, exchange)
+                        volume = float(ticker_data['v'][1]) * float(ticker_data['c'][0])
+                        if volume > self.min_volume_threshold:
+                            result[normalized_symbol] = {
+                                'price': float(ticker_data['c'][0]),
+                                'volume': volume
+                            }
+                return result
+            
+            elif exchange == 'coinbase':
+                if isinstance(data, list):
+                    result = {}
+                    for item in data:
+                        if 'id' in item and 'price' in item and 'volume_24h' in item:
+                            symbol = self.normalize_symbol(item['id'], exchange)
+                            volume = float(item['volume_24h']) if item['volume_24h'] else 0
+                            if volume > self.min_volume_threshold:
+                                result[symbol] = {
+                                    'price': float(item['price']),
+                                    'volume': volume
+                                }
+                    return result
+            
+            elif exchange == 'poloniex':
+                result = {}
+                for symbol, ticker_data in data.items():
+                    if 'close' in ticker_data and 'quoteVolume' in ticker_data:
+                        normalized_symbol = self.normalize_symbol(symbol, exchange)
+                        volume = float(ticker_data['quoteVolume'])
+                        if volume > self.min_volume_threshold:
+                            result[normalized_symbol] = {
+                                'price': float(ticker_data['close']),
+                                'volume': volume
+                            }
+                return result
+            
+            # Add more exchange parsers as needed...
+            
+        except Exception as e:
+            logger.error(f"Error parsing {exchange} data: {str(e)}")
+        
+        return {}
+
+    async def get_cached_arbitrage_data(self, is_premium: bool = False):
+        """Cache'den veri döndür, gerekirse yenile"""
+        current_time = time.time()
+    
+        with self.cache_lock:
+            # Cache geçerli mi kontrol et
+            if (current_time - self.cache_timestamp) < self.cache_duration and self.cache_data:
+                logger.info("Returning cached data")
+                return self.calculate_arbitrage(self.cache_data, is_premium)
+        
+            # Eğer başka bir request zaten fetch yapıyorsa bekle
+            if self.is_fetching:
+                # Son cache'i döndür (varsa)
+                if self.cache_data:
+                    logger.info("Fetch in progress, returning last cached data")
+                    return self.calculate_arbitrage(self.cache_data, is_premium)
+        
+            # Minimum fetch interval kontrolü
+            if (current_time - self.last_fetch_time) < self.min_fetch_interval:
+                if self.cache_data:
+                    logger.info("Rate limit protection, returning cached data")
+                    return self.calculate_arbitrage(self.cache_data, is_premium)
+    
+        # Yeni veri fetch et
+        return await self._fetch_fresh_data(is_premium)
+
+    async def _fetch_fresh_data(self, is_premium: bool):
+        """Yeni veri çek ve cache'le"""
+        with self.cache_lock:
+            if self.is_fetching:  # Double-check locking
+                if self.cache_data:
+                    return self.calculate_arbitrage(self.cache_data, is_premium)
+        
+            self.is_fetching = True
+    
+        try:
+            logger.info("Fetching fresh data from exchanges")
+            all_data = await self.get_all_prices_with_volume()
+        
+            with self.cache_lock:
+                self.cache_data = all_data
+                self.cache_timestamp = time.time()
+                self.last_fetch_time = time.time()
+        
+            return self.calculate_arbitrage(all_data, is_premium)
+    
+        finally:
+            with self.cache_lock:
+                self.is_fetching = False
+    
+    async def get_all_prices_with_volume(self) -> Dict[str, Dict[str, Dict]]:
+        """Fetch price and volume data from all exchanges"""
+        tasks = [self.fetch_prices_with_volume(exchange) for exchange in self.exchanges]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        
+        exchange_data = {}
+        for exchange, result in zip(self.exchanges.keys(), results):
+            if isinstance(result, Exception):
+                logger.error(f"Error fetching {exchange}: {result}")
+                exchange_data[exchange] = {}
+            else:
+                exchange_data[exchange] = result
+                logger.info(f"{exchange}: {len(result)} symbols fetched")
+        
+        return exchange_data
+
+    async def get_specific_symbol_prices(self, symbol_to_find: str) -> List[Tuple[str, float]]:
+        """
+        Fetches the price of a specific symbol from all exchanges and returns them sorted.
+        Returns a list of (exchange_name, price) tuples.
+        """
+        normalized_symbol_to_find = self.normalize_symbol(symbol_to_find, "general")
+        
+        # Fetch data from all exchanges
+        all_exchange_data = await self.get_all_prices_with_volume()
+        
+        found_prices = []
+        for exchange_name, data_for_exchange in all_exchange_data.items():
+            if normalized_symbol_to_find in data_for_exchange:
+                price = data_for_exchange[normalized_symbol_to_find]['price']
+                if price > 0: # Only include valid prices
+                    found_prices.append((exchange_name, price))
+        
+        # Sort by price (cheapest to most expensive)
+        found_prices.sort(key=lambda x: x[1])
+        return found_prices
+    
+    def is_symbol_safe(self, symbol: str, exchange_data: Dict[str, Dict]) -> Tuple[bool, str]:
+        """Check if symbol is safe for arbitrage and return reason."""
+        
+        logger.info(f"Checking safety for symbol: {symbol}")
+        logger.info(f"Exchange data for {symbol}: {exchange_data}")
+
+        # 1. Trusted symbols list
+        if symbol in self.trusted_symbols:
+            logger.info(f"{symbol} is a trusted symbol.")
+            return (True, "✅ Trusted symbol with verified history and high liquidity.")
+        
+        # 2. Extract volumes and filter non-zero
+        volumes = [data.get('volume', 0) for data in exchange_data.values()]
+        non_zero_volumes = [v for v in volumes if v > 0]
+        logger.info(f"Non-zero volumes for {symbol}: {non_zero_volumes}")
+
+        if not non_zero_volumes:
+            logger.warning(f"No current volume data available for {symbol}.")
+            return (False, "❌ No current volume data available on any exchange.")
+
+        total_volume = sum(non_zero_volumes)
+        exchanges_with_sufficient_volume = sum(1 for v in non_zero_volumes if v >= self.min_volume_threshold)
+        logger.info(f"Total volume for {symbol}: ${total_volume:,.0f}, Exchanges with sufficient volume: {exchanges_with_sufficient_volume}")
+        
+        # 3. Suspicious symbol check
+        base_symbol = symbol.replace('USDT', '').replace('USDC', '').replace('BUSD', '')
+        is_suspicious_name = any(suspicious in base_symbol.upper() for suspicious in self.suspicious_symbols)
+        logger.info(f"Is {symbol} a suspicious name? {is_suspicious_name}")
+
+        if is_suspicious_name:
+            if total_volume > self.min_volume_threshold * 5 and exchanges_with_sufficient_volume >= 3: # Require more exchanges for suspicious names
+                logger.info(f"Suspicious symbol {symbol} deemed safe due to high volume and sufficient exchanges.")
+                return (True, f"🔍 Symbol has a suspicious name, but is deemed safe due to high total volume (${total_volume:,.0f}) and presence on {exchanges_with_sufficient_volume} major exchanges.")
+            else:
+                logger.warning(f"Suspicious symbol {symbol} deemed unsafe. Total volume: ${total_volume:,.0f}, Exchanges with sufficient volume: {exchanges_with_sufficient_volume}.")
+                return (False, f"❌ Symbol has a suspicious name. Total volume (${total_volume:,.0f}) is insufficient or not present on enough major exchanges ({exchanges_with_sufficient_volume} of minimum 3 needed for suspicious symbols).")
+
+        # 4. General safety checks for non-trusted, non-suspicious symbols
+        if total_volume < self.min_volume_threshold * 2: # Require higher total volume for non-trusted symbols
+            logger.warning(f"Total volume for {symbol} (${total_volume:,.0f}) is below the required threshold (${self.min_volume_threshold * 2:,.0f}).")
+            return (False, f"❌ Total volume (${total_volume:,.0f}) is below the required threshold (${self.min_volume_threshold * 2:,.0f}).")
+        
+        if exchanges_with_sufficient_volume < 2:
+            logger.warning(f"{symbol} found on only {exchanges_with_sufficient_volume} exchange(s) with sufficient volume (minimum 2 required).")
+            return (False, f"❌ Found on only {exchanges_with_sufficient_volume} exchange(s) with sufficient volume (minimum 2 required).")
+
+        # 5. Volume differences too large? (one exchange very high, another very low)
+        if len(non_zero_volumes) >= 2:
+            max_vol = max(non_zero_volumes)
+            min_vol = min(non_zero_volumes)
+            if min_vol > 0 and max_vol > min_vol * 100:  # 100x difference is suspicious
+                logger.warning(f"Significant volume discrepancy detected for {symbol}. Max volume (${max_vol:,.0f}) is more than 100x minimum volume (${min_vol:,.0f}).")
+                return (False, f"❌ Significant volume discrepancy detected. Max volume (${max_vol:,.0f}) is more than 100x minimum volume (${min_vol:,.0f}), indicating potential liquidity issues or data anomalies.")
+
+        logger.info(f"{symbol} met general safety criteria.")
+        return (True, f"✅ General safety criteria met: Sufficient total volume (${total_volume:,.0f}) and presence on {exchanges_with_sufficient_volume} exchanges.")
+    
+    def validate_arbitrage_opportunity(self, opportunity: Dict) -> bool:
+        """Validate if arbitrage opportunity is real"""
+        
+        # 1. Profit ratio too high?
+        if opportunity['profit_percent'] > self.max_profit_threshold:
+            logger.warning(f"Suspicious high profit: {opportunity['symbol']} - {opportunity['profit_percent']:.2f}%")
+            return False
+        
+        # 2. Price difference reasonable?
+        price_ratio = opportunity['sell_price'] / opportunity['buy_price']
+        if price_ratio > 1.3:  # More than 30% difference is suspicious
+            return False
+        
+        # 3. Minimum profit threshold
+        if opportunity['profit_percent'] < 0.1:  # Less than 0.1% profit is meaningless
+            return False
+        
+        return True
+    
+    def calculate_arbitrage(self, all_data: Dict[str, Dict[str, Dict]], is_premium: bool = False) -> List[Dict]:
+        """Enhanced arbitrage calculation"""
+        opportunities = []
+        
+        # Find common symbols across exchanges
+        all_symbols = set()
+        for exchange_data in all_data.values():
+            if exchange_data:
+                all_symbols.update(exchange_data.keys())
+        
+        # Filter symbols that appear in at least 2 exchanges
+        common_symbols = set()
+        for symbol in all_symbols:
+            exchanges_with_symbol = sum(1 for exchange_data in all_data.values() if symbol in exchange_data)
+            if exchanges_with_symbol >= 2:
+                common_symbols.add(symbol)
+        
+        logger.info(f"Found {len(common_symbols)} common symbols")
+        
+        for symbol in common_symbols:
+            # Collect all exchange data for this symbol
+            exchange_data = {ex: all_data[ex][symbol] for ex in all_data if symbol in all_data[ex]}
+            
+            # Safety check
+            is_safe, _ = self.is_symbol_safe(symbol, exchange_data) # Only check boolean here for arbitrage calculation
+            if not is_safe:
+                continue
+            
+            if len(exchange_data) >= 2:
+                # Sort by price
+                sorted_exchanges = sorted(exchange_data.items(), key=lambda x: x[1]['price'])
+                lowest_ex, lowest_data = sorted_exchanges[0]
+                highest_ex, highest_data = sorted_exchanges[-1]
+                
+                lowest_price = lowest_data['price']
+                highest_price = highest_data['price']
+                
+                if lowest_price > 0:
+                    profit_percent = ((highest_price - lowest_price) / lowest_price) * 100
+                    
+                    opportunity = {
+                        'symbol': symbol,
+                        'buy_exchange': lowest_ex,
+                        'sell_exchange': highest_ex,
+                        'buy_price': lowest_price,
+                        'sell_price': highest_price,
+                        'profit_percent': profit_percent,
+                        'buy_volume': lowest_data.get('volume', 0),
+                        'sell_volume': highest_data.get('volume', 0),
+                        'avg_volume': (lowest_data.get('volume', 0) + highest_data.get('volume', 0)) / 2
+                    }
+                    
+                    if self.validate_arbitrage_opportunity(opportunity):
+                        # For free users, only show opportunities up to 2%
+                        if not is_premium and opportunity['profit_percent'] > self.free_user_max_profit:
+                            continue
+                        opportunities.append(opportunity)
+        
+        return sorted(opportunities, key=lambda x: x['profit_percent'], reverse=True)
+    
+    def is_premium_user(self, user_id: int) -> bool:
+        """Check if user is premium"""
+        return user_id in self.premium_users
+    
     def save_user(self, user_id: int, username: str):
-        """Save or update user in database."""
+        """Save user to PostgreSQL database."""
         conn = self.get_db_connection()
         try:
             with conn.cursor() as cursor:
                 cursor.execute('''
-                    INSERT INTO users (user_id, username, last_active)
-                    VALUES (%s, %s, CURRENT_TIMESTAMP)
-                    ON CONFLICT (user_id) 
-                    DO UPDATE SET 
+                    INSERT INTO users (user_id, username)
+                    VALUES (%s, %s)
+                    ON CONFLICT (user_id) DO UPDATE SET 
                         username = EXCLUDED.username,
-                        last_active = EXCLUDED.last_active
+                        added_date = CURRENT_TIMESTAMP
                 ''', (user_id, username))
             conn.commit()
         except Exception as e:
             logger.error(f"Error saving user: {e}")
             conn.rollback()
-
-    def is_premium_user(self, user_id: int) -> bool:
-        """Check if user is premium."""
-        return user_id in self.premium_users
-
-    async def verify_gumroad_license(self, license_key: str) -> Dict:
-        """Verify license key with Gumroad API."""
-        if not GUMROAD_ACCESS_TOKEN or not GUMROAD_PRODUCT_ID:
-            return {'success': False, 'error': 'Gumroad configuration missing'}
-        
-        url = f"https://api.gumroad.com/v2/licenses/verify"
-        data = {
-            'product_id': GUMROAD_PRODUCT_ID,
-            'license_key': license_key
-        }
-        
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.post(url, data=data) as response:
-                    if response.status != 200:
-                        return {'success': False, 'error': f'Gumroad API error: {response.status}'}
-                    
-                    result = await response.json()
-                    if not result.get('success'):
-                        return {'success': False, 'error': result.get('message', 'Unknown error')}
-                    
-                    return {
-                        'success': True,
-                        'purchase': result
-                    }
-        except Exception as e:
-            return {'success': False, 'error': str(e)}
-
-    def activate_license_key(self, license_key: str, user_id: int, username: str, purchase_data: Dict):
-        """Activate license key for user."""
+    
+    def save_arbitrage_data(self, opportunity: Dict):
+        """Save arbitrage data to PostgreSQL."""
         conn = self.get_db_connection()
         try:
             with conn.cursor() as cursor:
-                # Add to license keys table
                 cursor.execute('''
-                    INSERT INTO license_keys (license_key, user_id, username, gumroad_sale_id)
-                    VALUES (%s, %s, %s, %s)
-                ''', (license_key, user_id, username, purchase_data.get('sale_id')))
-                
-                # Add to premium users
-                subscription_end = datetime.now() + timedelta(days=30)
-                cursor.execute('''
-                    INSERT INTO premium_users (user_id, username, added_by_admin, subscription_end)
-                    VALUES (%s, %s, FALSE, %s)
-                    ON CONFLICT (user_id) 
-                    DO UPDATE SET 
-                        username = EXCLUDED.username,
-                        subscription_end = EXCLUDED.subscription_end
-                ''', (user_id, username, subscription_end))
-                
-                # Update user table
-                cursor.execute('''
-                    UPDATE users 
-                    SET is_premium = TRUE, 
-                        subscription_end = %s
-                    WHERE user_id = %s
-                ''', (subscription_end, user_id))
-                
-                conn.commit()
-                
-                # Update in-memory caches
-                self.used_license_keys.add(license_key)
-                self.premium_users.add(user_id)
-                
-                logger.info(f"Activated license for user {user_id} ({username})")
+                    INSERT INTO arbitrage_data 
+                    (symbol, exchange1, exchange2, price1, price2, profit_percent, volume_24h)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                ''', (
+                    opportunity['symbol'],
+                    opportunity['buy_exchange'],
+                    opportunity['sell_exchange'],
+                    opportunity['buy_price'],
+                    opportunity['sell_price'],
+                    opportunity['profit_percent'],
+                    opportunity['avg_volume']
+                ))
+            conn.commit()
         except Exception as e:
-            logger.error(f"Error activating license: {e}")
+            logger.error(f"Error saving arbitrage data: {e}")
             conn.rollback()
-
-    async def _fetch_fresh_data(self, force: bool = False):
-        """Fetch fresh data from exchanges."""
-        if not force and (time.time() - self.last_fetch_time) < self.min_fetch_interval:
-            return
-        
-        if self.is_fetching:
-            return
-        
-        self.is_fetching = True
+    
+    def get_premium_users_list(self) -> List[Dict]:
+        """Get list of premium users from PostgreSQL."""
+        conn = self.get_db_connection()
         try:
-            async with aiohttp.ClientSession(connector=self.connector) as session:
-                self.session = session
-                tasks = [self._fetch_exchange_data(exchange, url) for exchange, url in self.exchanges.items()]
-                results = await asyncio.gather(*tasks, return_exceptions=True)
-                
-                new_data = {}
-                for exchange, result in zip(self.exchanges.keys(), results):
-                    if isinstance(result, Exception):
-                        logger.error(f"Error fetching data from {exchange}: {result}")
-                        continue
-                    if result:
-                        new_data[exchange] = result
-                
-                with self.cache_lock:
-                    self.cache_data = new_data
-                    self.cache_timestamp = time.time()
-                    self.last_fetch_time = time.time()
-                    logger.info(f"Cache updated with data from {len(new_data)} exchanges")
-        finally:
-            self.is_fetching = False
-
-    async def _fetch_exchange_data(self, exchange: str, url: str) -> Optional[Dict]:
-        """Fetch data from a single exchange."""
-        try:
-            async with self.request_semaphore:
-                async with self.session.get(url, timeout=10) as response:
-                    if response.status != 200:
-                        logger.warning(f"Non-200 response from {exchange}: {response.status}")
-                        return None
-                    
-                    data = await response.json()
-                    self.stats['api_requests'] += 1
-                    
-                    # Parse data based on exchange
-                    if exchange == 'binance':
-                        return {item['symbol']: float(item['lastPrice']) for item in data if item['symbol'].endswith('USDT')}
-                    elif exchange == 'kucoin':
-                        return {item['symbol']: float(item['last']) for item in data['data']['ticker'] if item['symbol'].endswith('-USDT')}
-                    elif exchange == 'gate':
-                        return {item['currency_pair']: float(item['last']) for item in data if item['currency_pair'].endswith('_USDT')}
-                    elif exchange == 'mexc':
-                        return {item['symbol']: float(item['lastPrice']) for item in data if item['symbol'].endswith('USDT')}
-                    elif exchange == 'bybit':
-                        return {item['symbol']: float(item['lastPrice']) for item in data['result']['list'] if item['symbol'].endswith('USDT')}
-                    elif exchange == 'okx':
-                        return {item['instId']: float(item['last']) for item in data['data'] if item['instId'].endswith('USDT')}
-                    elif exchange == 'huobi':
-                        return {item['symbol']: float(item['close']) for item in data['data'] if item['symbol'].endswith('usdt')}
-                    elif exchange == 'bitget':
-                        return {item['symbol']: float(item['close']) for item in data['data'] if item['symbol'].endswith('USDT')}
-                    elif exchange == 'coinbase':
-                        return {item['id']: float(item['price']) for item in data if item['quote_currency'] == 'USDT'}
-                    elif exchange == 'kraken':
-                        return {f"{k[:-4]}USDT": float(v['c'][0]) for k, v in data['result'].items() if k.endswith('USDT')}
-                    elif exchange == 'bitfinex':
-                        return {f"{item[0][1:-3]}USDT": item[7] for item in data if item[0].endswith('USD')}
-                    elif exchange == 'cryptocom':
-                        return {item['i']: float(item['a']) for item in data['result']['data'] if item['i'].endswith('_USDT')}
-                    elif exchange == 'bingx':
-                        return {item['symbol']: float(item['lastPrice']) for item in data['data'] if item['symbol'].endswith('USDT')}
-                    elif exchange == 'lbank':
-                        return {item['symbol']: float(item['ticker']['latest']) for item in data['data'] if item['symbol'].endswith('_USDT')}
-                    elif exchange == 'digifinex':
-                        return {item['symbol']: float(item['last']) for item in data['ticker'] if item['symbol'].endswith('_USDT')}
-                    elif exchange == 'bitmart':
-                        return {item['symbol']: float(item['last_price']) for item in data['data']['tickers'] if item['symbol'].endswith('_USDT')}
-                    elif exchange == 'xt':
-                        return {item['s']: float(item['c']) for item in data['result']['data'] if item['s'].endswith('USDT')}
-                    elif exchange == 'phemex':
-                        return {k: float(v['close']) for k, v in data['data'].items() if k.endswith('USDT')}
-                    elif exchange == 'bitstamp':
-                        return {f"{k[:-4]}USDT": float(v['last']) for k, v in data.items() if k.endswith('usdt')}
-                    elif exchange == 'gemini':
-                        return {f"{item['pair'][:-3]}USDT": float(item['price']) for item in data if item['pair'].endswith('usd')}
-                    elif exchange == 'poloniex':
-                        return {f"{k.split('_')[0]}USDT": float(v['last']) for k, v in data.items() if k.endswith('_USDT')}
-                    elif exchange == 'ascendex':
-                        return {item['symbol']: float(item['close']) for item in data['data'] if item['symbol'].endswith('/USDT')}
-                    elif exchange == 'coinex':
-                        return {f"{k[:-5]}USDT": float(v['last']) for k, v in data['data'].items() if k.endswith('USDT')}
-                    elif exchange == 'hotcoin':
-                        return {item['symbol']: float(item['close']) for item in data['data'] if item['symbol'].endswith('_USDT')}
-                    elif exchange == 'bigone':
-                        return {item['asset_pair_name']: float(item['close']) for item in data['data'] if item['asset_pair_name'].endswith('-USDT')}
-                    elif exchange == 'probit':
-                        return {item['market_id']: float(item['last']) for item in data['data'] if item['market_id'].endswith('USDT')}
-                    elif exchange == 'latoken':
-                        return {item['symbol']: float(item['lastPrice']) for item in data['data'] if item['symbol'].endswith('USDT')}
-                    elif exchange == 'bitrue':
-                        return {item['symbol']: float(item['lastPrice']) for item in data if item['symbol'].endswith('USDT')}
-                    elif exchange == 'tidex':
-                        return {f"{k[:-5]}USDT": float(v['last']) for k, v in data.items() if k.endswith('_USDT')}
-                    elif exchange == 'p2pb2b':
-                        return {item['market']: float(item['last']) for item in data['result'] if item['market'].endswith('USDT')}
-                    else:
-                        logger.warning(f"No parser implemented for {exchange}")
-                        return None
+            with conn.cursor() as cursor:
+                cursor.execute('''
+                    SELECT user_id, username, subscription_end, added_date 
+                    FROM premium_users 
+                    ORDER BY added_date DESC
+                ''')
+                results = cursor.fetchall()
+                return [
+                    {
+                        'user_id': row[0],
+                        'username': row[1] or 'Unknown',
+                        'subscription_end': row[2],
+                        'added_date': row[3]
+                    } for row in results
+                ]
         except Exception as e:
-            logger.error(f"Error fetching data from {exchange}: {e}")
-            return None
-
-    async def get_arbitrage_opportunities(self, user_id: int) -> List[Dict]:
-        """Get arbitrage opportunities for the user."""
-        is_premium = self.is_premium_user(user_id)
-        is_admin = user_id == ADMIN_USER_ID
-        
-        max_profit = self.admin_max_profit_threshold if is_admin else (
-            self.max_profit_threshold if is_premium else self.free_user_max_profit
-        )
-        
-        # Get fresh data if cache is stale
-        current_time = time.time()
-        if (current_time - self.cache_timestamp) > self.cache_duration:
-            with self.cache_lock:
-                if (current_time - self.cache_timestamp) > self.cache_duration:
-                    self.stats['cache_misses'] += 1
-                    await self._fetch_fresh_data()
-                else:
-                    self.stats['cache_hits'] += 1
-        else:
-            self.stats['cache_hits'] += 1
-        
-        if not self.cache_data:
+            logger.error(f"Error getting premium users list: {e}")
             return []
-        
-        # Find arbitrage opportunities
-        opportunities = []
-        symbols = set()
-        
-        # First collect all symbols from all exchanges
-        for exchange_data in self.cache_data.values():
-            if exchange_data:
-                symbols.update(exchange_data.keys())
-        
-        # Then check each symbol for arbitrage
-        for symbol in symbols:
-            if not symbol.endswith('USDT'):
-                continue
-            
-            # Skip suspicious symbols
-            base_symbol = symbol[:-4]
-            if any(sus_word in base_symbol for sus_word in self.suspicious_symbols):
-                continue
-            
-            # Skip untrusted symbols for free users
-            if not is_premium and symbol not in self.trusted_symbols:
-                continue
-            
-            prices = {}
-            for exchange, exchange_data in self.cache_data.items():
-                if exchange_data and symbol in exchange_data:
-                    prices[exchange] = exchange_data[symbol]
-            
-            if len(prices) < 2:
-                continue
-            
-            min_exchange = min(prices.items(), key=lambda x: x[1])[0]
-            max_exchange = max(prices.items(), key=lambda x: x[1])[0]
-            min_price = prices[min_exchange]
-            max_price = prices[max_exchange]
-            
-            profit_percent = ((max_price - min_price) / min_price) * 100
-            
-            if profit_percent >= max_profit:
-                opportunities.append({
-                    'symbol': symbol,
-                    'exchange1': min_exchange,
-                    'exchange2': max_exchange,
-                    'price1': min_price,
-                    'price2': max_price,
-                    'profit_percent': profit_percent,
-                    'volume_24h': 0  # Placeholder, would need volume data
-                })
-        
-        # Sort by profit descending
-        opportunities.sort(key=lambda x: x['profit_percent'], reverse=True)
-        
-        return opportunities
+
+    def get_user_id_by_username(self, username: str) -> int:
+        """Get user ID by username from PostgreSQL database."""
+        conn = self.get_db_connection()
+        try:
+            with conn.cursor() as cursor:
+                cursor.execute('SELECT user_id FROM users WHERE username = %s', (username,))
+                result = cursor.fetchone()
+                return result[0] if result else None
+        except Exception as e:
+            logger.error(f"Error getting user ID by username: {e}")
+            return None
 
 # Global bot instance
 bot = ArbitrageBot()
 
-# Admin user ID
-ADMIN_USER_ID = int(os.getenv("ADMIN_USER_ID", "0"))
+# Admin user ID - set your Telegram user ID here
+ADMIN_USER_ID = int(os.getenv("ADMIN_USER_ID", "0"))  # Replace with your user ID
 
+# Command Handlers
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     bot.save_user(user.id, user.username or "")
-    
-    # Check for affiliate parameter
-    if context.args and len(context.args) > 0:
-        affiliate_id = context.args[0]
-        bot.track_referral(user.id, affiliate_id)
     
     is_premium = bot.is_premium_user(user.id)
     welcome_text = "🎯 Premium" if is_premium else "🔍 Free"
@@ -929,118 +971,101 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
-async def handle_arbitrage_check(query):
-    user = query.from_user
-    await query.edit_message_text("🔍 Scanning for arbitrage opportunities...")
+async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
     
-    opportunities = await bot.get_arbitrage_opportunities(user.id)
+    if query.data == 'check':
+        await handle_arbitrage_check(query)
+    elif query.data == 'trusted':
+        await show_trusted_symbols(query)
+    elif query.data == 'premium':
+        await show_premium_info(query)
+    elif query.data == 'help':
+        await show_help(query)
+    elif query.data == 'admin' and query.from_user.id == ADMIN_USER_ID:
+        await show_admin_panel(query)
+    elif query.data == 'list_premium' and query.from_user.id == ADMIN_USER_ID:
+        await list_premium_users(query)
+    elif query.data == 'back':
+        await show_main_menu(query)
+    elif query.data == 'activate_license':
+        await show_license_activation(query)
+
+async def handle_arbitrage_check(query):
+    # Yüklenme mesajını göster
+    await query.edit_message_text("🔄 Scanning prices across exchanges... (Security filters active)")
+    
+    # 3 saniye bekle
+    await asyncio.sleep(3)
+    
+    user_id = query.from_user.id
+    is_premium = bot.is_premium_user(user_id)
+    
+    opportunities = await bot.get_cached_arbitrage_data(is_premium)
     
     if not opportunities:
         await query.edit_message_text(
-            "No significant arbitrage opportunities found at the moment.\n\n"
-            "Try again later or check /trusted for supported coins."
+            "❌ No safe arbitrage opportunities found\n\n"
+            "🔒 Security filters applied:\n"
+            "• Minimum volume control ($100k+)\n"
+            "• Suspicious coin detection\n"
+            "• Reasonable profit ratio control\n"
+            f"• Max profit shown: {bot.free_user_max_profit}%" if not is_premium else "• Full profit range available"
         )
         return
     
-    is_premium = bot.is_premium_user(user.id)
-    max_display = 10 if is_premium or user.id == ADMIN_USER_ID else 3
+    text = "💎 Premium Safe Arbitrage:\n\n" if is_premium else f"🔍 Safe Arbitrage (≤{bot.free_user_max_profit}%):\n\n"
     
-    text = "💰 *Arbitrage Opportunities*\n\n"
-    for i, opp in enumerate(opportunities[:max_display], 1):
-        text += (
-            f"*{i}. {opp['symbol']}*\n"
-            f"• Buy at: {opp['exchange1']} ({opp['price1']:.8f})\n"
-            f"• Sell at: {opp['exchange2']} ({opp['price2']:.8f})\n"
-            f"• Profit: *{opp['profit_percent']:.2f}%*\n\n"
-        )
+    max_opps = 20 if is_premium else 8
+    for i, opp in enumerate(opportunities[:max_opps], 1):
+        # Trusted coin indicator
+        trust_icon = "✅" if opp['symbol'] in bot.trusted_symbols else "🔍"
+        
+        text += f"{i}. {trust_icon} {opp['symbol']}\n"
+        text += f"   ⬇️ Buy: {opp['buy_exchange']} ${opp['buy_price']:.6f}\n"
+        text += f"   ⬆️ Sell: {opp['sell_exchange']} ${opp['sell_price']:.6f}\n"
+        text += f"   💰 Profit: {opp['profit_percent']:.2f}%\n"
+        text += f"   📊 Volume: ${opp['avg_volume']:,.0f}\n\n"
+        
+        # Save data for premium users
+        if is_premium:
+            bot.save_arbitrage_data(opp)
     
-    if len(opportunities) > max_display:
-        text += f"Showing {max_display} of {len(opportunities)} opportunities.\n"
-        if not is_premium:
-            text += "Upgrade to premium to see all opportunities.\n"
-    
-    text += "\n⚠️ Always check withdrawal fees and transfer times!"
+    if not is_premium:
+        total_opportunities = len(opportunities)
+        hidden_opportunities = max(0, total_opportunities - max_opps)
+        text += f"\n💎 Showing {min(max_opps, total_opportunities)} of {total_opportunities} opportunities"
+        if hidden_opportunities > 0:
+            text += f"\n🔒 {hidden_opportunities} more opportunities available for premium users"
+        text += f"\n📈 Higher profit rates (>{bot.free_user_max_profit}%) available with premium!"
     
     keyboard = [
         [InlineKeyboardButton("🔄 Refresh", callback_data='check')],
+        [InlineKeyboardButton("📊 Trusted Coins", callback_data='trusted')],
+        [InlineKeyboardButton("💎 Premium", callback_data='premium')],
         [InlineKeyboardButton("🔙 Main Menu", callback_data='back')]
     ]
     
-    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
 
 async def show_trusted_symbols(query):
-    text = "✅ *Trusted Cryptocurrencies*\n\n"
-    text += "These coins are monitored for arbitrage:\n\n"
+    text = "✅ **Trusted Cryptocurrencies**\n\n"
+    text += "These coins are verified across all exchanges:\n\n"
     
-    # Split into chunks of 5 for better readability
-    symbols = sorted(bot.trusted_symbols)
-    for i in range(0, len(symbols), 5):
-        text += " ".join(symbols[i:i+5]) + "\n"
+    symbols_list = list(bot.trusted_symbols)
+    symbols_list.sort()
     
-    text += "\nFree users only see opportunities for these coins."
+    # Group symbols for better display
+    for i in range(0, len(symbols_list), 3):
+        group = symbols_list[i:i+3]
+        text += " • ".join(group) + "\n"
     
-    keyboard = [
-        [InlineKeyboardButton("🔙 Main Menu", callback_data='back')]
-    ]
+    text += f"\n📊 Total: {len(bot.trusted_symbols)} trusted coins"
+    text += "\n🔒 These symbols have additional security validation"
     
-    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
-
-async def show_premium_info(query):
-    user = query.from_user
-    is_premium = bot.is_premium_user(user.id)
-    
-    text = "💎 *Premium Membership*\n\n"
-    
-    if is_premium:
-        text += "✅ You are a premium user!\n\n"
-        text += "🔓 All features unlocked:\n"
-        text += "• Higher profit threshold alerts\n"
-        text += "• More arbitrage opportunities shown\n"
-        text += "• No coin restrictions\n"
-        text += "• Priority support\n"
-    else:
-        text += "🔒 Free version limitations:\n"
-        text += "• Only 3 opportunities shown\n"
-        text += "• Only trusted coins monitored\n"
-        text += "• Lower profit threshold alerts\n\n"
-        text += "Upgrade to unlock full potential:\n"
-        text += f"{GUMROAD_LINK}\n\n"
-        text += "After purchase, send your license key here to activate."
-    
-    keyboard = []
-    if not is_premium:
-        keyboard.append([InlineKeyboardButton("🔑 Activate License", callback_data='activate_license')])
-    keyboard.append([InlineKeyboardButton("🔙 Main Menu", callback_data='back')])
-    
-    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
-
-async def show_help(query):
-    text = """ℹ️ *Help Guide*
-
-🔍 *How It Works:*
-1. The bot scans multiple exchanges
-2. Finds price differences for the same coin
-3. Calculates potential profit after fees
-4. Shows you the best opportunities
-
-⚙️ *Commands:*
-• /start - Show main menu
-• /check - Find arbitrage opportunities
-• /trusted - List trusted coins
-• /premium - Premium membership info
-
-⚠️ *Important Notes:*
-• Always account for withdrawal fees
-• Transfer times can affect profits
-• Prices change rapidly
-
-📧 *Support:* {SUPPORT_USERNAME}""".format(SUPPORT_USERNAME=SUPPORT_USERNAME)
-    
-    keyboard = [
-        [InlineKeyboardButton("🔙 Main Menu", callback_data='back')]
-    ]
-    
-    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+    keyboard = [[InlineKeyboardButton("🔙 Back", callback_data='back')]]
+    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
 
 async def show_main_menu(query):
     user = query.from_user
@@ -1069,680 +1094,37 @@ async def show_main_menu(query):
     )
 
 async def show_license_activation(query):
-    await query.edit_message_text(
-        "🔑 *License Activation*\n\n"
-        "To activate your premium license:\n"
-        "1. Purchase from our Gumroad page\n"
-        f"2. Copy your license key from the receipt\n"
-        "3. Paste it here in this chat\n\n"
-        f"Get your license: {GUMROAD_LINK}\n\n"
-        "Need help? Contact {SUPPORT_USERNAME}".format(SUPPORT_USERNAME=SUPPORT_USERNAME),
-        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Main Menu", callback_data='back')]]),
-        parse_mode='Markdown'
-    )
+    text = """🔑 **License Key Activation**
 
-async def show_admin_panel(query):
-    text = """👑 **Admin Panel**
-    
-📊 **Statistics:**
-• Total premium users: {}
-• Total exchanges: {}
-• Trusted symbols: {}
+Enter your Gumroad license key to activate premium subscription.
 
-🛠️ **Available Commands:**
-• /addpremium <user_id> [days] - Add premium user
-• /removepremium <user_id> - Remove premium user
-• /listpremium - List all premium users
-• /stats - Bot statistics
-• /admincheck - Admin arbitrage check
-• /createaffiliate <name> - Create new affiliate link
-• /affiliatestats - Show affiliate statistics
+📝 **How to get your license key:**
+1. Purchase premium subscription from Gumroad
+2. Check your email for the license key
+3. Copy and paste the key here
 
-📋 **Quick Actions:**""".format(
-        len(bot.premium_users), 
-        len(bot.exchanges), 
-        len(bot.trusted_symbols)
-    )
+💡 **Format:** 6F0E4C97-B72A4E69-A11BF6C4-AF6517E7 (SAMPLE)
+
+Please send your license key as a message."""
     
-    keyboard = [
-        [InlineKeyboardButton("📋 List Premium Users", callback_data='list_premium')],
-        [InlineKeyboardButton("📨 Send Messages", callback_data='admin_messages')],
-        [InlineKeyboardButton("📊 Detailed Stats", callback_data='admin_stats')],
-        [InlineKeyboardButton("👥 Affiliate System", callback_data='admin_affiliates')],
-        [InlineKeyboardButton("🔙 Main Menu", callback_data='back')]
-    ]
-    
+    keyboard = [[InlineKeyboardButton("🔙 Back", callback_data='premium')]]
     await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
-
-async def list_premium_users(query):
-    conn = bot.get_db_connection()
-    try:
-        with conn.cursor() as cursor:
-            cursor.execute('''
-                SELECT user_id, username, subscription_end 
-                FROM premium_users 
-                ORDER BY subscription_end DESC
-            ''')
-            results = cursor.fetchall()
-            
-            text = "💎 *Premium Users*\n\n"
-            for row in results:
-                user_id, username, sub_end = row
-                text += f"• {username or 'Unknown'} ({user_id})\n"
-                text += f"  └ Valid until: {sub_end}\n"
-            
-            keyboard = [
-                [InlineKeyboardButton("🔙 Admin Panel", callback_data='admin')]
-            ]
-            
-            await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
-    except Exception as e:
-        logger.error(f"Error listing premium users: {e}")
-        await query.edit_message_text("Error fetching premium users list.")
-
-async def show_admin_messages_menu(query):
-    text = """📨 **Admin Message Center**
-
-Send messages to different user groups:
-
-• All users
-• Free users only
-• Premium users only
-• Specific user by ID/username"""
-
-    keyboard = [
-        [InlineKeyboardButton("👥 All Users", callback_data='send_to_all')],
-        [InlineKeyboardButton("🆓 Free Users", callback_data='send_to_free')],
-        [InlineKeyboardButton("💎 Premium Users", callback_data='send_to_premium')],
-        [InlineKeyboardButton("👤 Specific User", callback_data='send_to_specific')],
-        [InlineKeyboardButton("🔙 Admin Panel", callback_data='admin')]
-    ]
-    
-    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
-
-async def prompt_admin_message(query, target_type):
-    context.user_data['admin_message_target'] = target_type
-    
-    if target_type == 'specific':
-        await query.edit_message_text(
-            "Please reply with the target user's ID or username (@username):",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Cancel", callback_data='admin_messages')]])
-        )
-    else:
-        target_name = {
-            'all': 'all users',
-            'free': 'free users',
-            'premium': 'premium users'
-        }.get(target_type, 'users')
-        
-        await query.edit_message_text(
-            f"Please type the message you want to send to {target_name}:",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Cancel", callback_data='admin_messages')]])
-        )
-
-async def handle_admin_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_USER_ID:
-        return
-    
-    target_type = context.user_data.get('admin_message_target')
-    if not target_type:
-        return
-    
-    message_text = update.message.text
-    
-    if target_type == 'specific':
-        # First message is the user identifier
-        user_input = message_text.strip()
-        
-        try:
-            if user_input.startswith('@'):
-                # Username
-                username = user_input[1:]
-                user_id = bot.get_user_id_by_username(username)
-                if not user_id:
-                    await update.message.reply_text(f"User @{username} not found.")
-                    return
-            else:
-                # User ID
-                user_id = int(user_input)
-            
-            context.user_data['admin_message_target_user'] = user_id
-            await update.message.reply_text(
-                f"Now please type the message you want to send to user {user_input}:",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Cancel", callback_data='admin_messages')]])
-            )
-            return
-        except ValueError:
-            await update.message.reply_text("Invalid user ID. Please enter a numeric ID or @username.")
-            return
-    
-    # For other target types or after getting user ID for specific user
-    target_user_id = context.user_data.get('admin_message_target_user')
-    
-    # Save the message
-    bot.save_admin_message(update.effective_user.id, message_text, target_type, target_user_id)
-    
-    # Get users to notify
-    user_ids = bot.get_users_to_notify(target_type, target_user_id)
-    
-    if not user_ids:
-        await update.message.reply_text("No users found to notify.")
-        return
-    
-    # Send the message (in practice, you'd want to do this in a background task)
-    success_count = 0
-    for user_id in user_ids[:10]:  # Limit to 10 for demo
-        try:
-            await context.bot.send_message(
-                chat_id=user_id,
-                text=f"📢 Admin Announcement:\n\n{message_text}\n\n— Admin Team"
-            )
-            success_count += 1
-        except Exception as e:
-            logger.error(f"Error sending message to user {user_id}: {e}")
-    
-    await update.message.reply_text(
-        f"Message sent to {success_count} users successfully.\n"
-        f"(Total target users: {len(user_ids)})"
-    )
-    
-    # Clean up
-    if 'admin_message_target' in context.user_data:
-        del context.user_data['admin_message_target']
-    if 'admin_message_target_user' in context.user_data:
-        del context.user_data['admin_message_target_user']
-
-async def show_admin_stats(query):
-    # User growth stats
-    growth_stats = bot.get_user_growth()
-    active_users = bot.get_active_users()
-    
-    text = """📊 **Detailed Statistics**
-
-👥 **User Growth:**
-• Total users: {}
-• New today: {}
-• New this week: {}
-• New this month: {}
-• Premium users: {}
-
-🏆 **Most Active Users (7 days):**
-""".format(
-        growth_stats.get('total_users', 0),
-        growth_stats.get('new_users_today', 0),
-        growth_stats.get('new_users_week', 0),
-        growth_stats.get('new_users_month', 0),
-        growth_stats.get('premium_users', 0)
-    )
-    
-    for i, user in enumerate(active_users[:5], 1):
-        text += f"{i}. {user['username']} - {user['activity_count']} commands\n"
-    
-    if len(active_users) > 5:
-        text += f"\n... and {len(active_users) - 5} more active users\n"
-    
-    # Add affiliate stats if available
-    affiliates = bot.get_all_affiliates()
-    if affiliates:
-        text += "\n👥 **Top Affiliates:**\n"
-        for i, aff in enumerate(affiliates[:3], 1):
-            text += f"{i}. {aff['name']} - {aff['referred_users']} referrals ({aff['premium_conversions']} premium)\n"
-    
-    keyboard = [
-        [InlineKeyboardButton("🔄 Refresh", callback_data='admin_stats')],
-        [InlineKeyboardButton("🔙 Admin Panel", callback_data='admin')]
-    ]
-    
-    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
-
-async def show_admin_affiliates(query):
-    affiliates = bot.get_all_affiliates()
-    
-    if not affiliates:
-        text = "👥 **Affiliate System**\n\nNo affiliates created yet."
-    else:
-        text = f"👥 **Affiliate System** ({len(affiliates)} affiliates)\n\n"
-        for i, aff in enumerate(affiliates, 1):
-            text += f"{i}. {aff['name']}\n"
-            text += f"   └ Referrals: {aff['referred_users']} (Premium: {aff['premium_conversions']})\n"
-            text += f"   └ Conversion: {aff['conversion_rate']:.1f}%\n"
-            text += f"   └ ID: {aff['affiliate_id']}\n\n"
-    
-    keyboard = []
-    
-    # Add buttons for each affiliate (max 5)
-    for aff in affiliates[:5]:
-        affiliate_id = aff['affiliate_id']
-        keyboard.append([InlineKeyboardButton(
-            f"🔍 {aff['name']} ({aff['referred_users']})", 
-            callback_data=f'affiliate_{affiliate_id}'
-        )])
-    
-    keyboard.extend([
-        [InlineKeyboardButton("➕ Create New Affiliate", callback_data='create_affiliate')],
-        [InlineKeyboardButton("🔙 Admin Panel", callback_data='admin')]
-    ])
-    
-    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
-
-async def show_affiliate_details(query, affiliate_id):
-    stats = bot.get_affiliate_stats(affiliate_id)
-    if not stats:
-        await query.answer("Affiliate not found!", show_alert=True)
-        return
-    
-    text = f"""🔍 **Affiliate Details: {stats['name']}**
-
-📊 **Statistics:**
-• Total Referrals: {stats['referred_users']}
-• Activated Licenses: {stats['activated_licenses']}
-• Premium Conversions: {stats['premium_conversions']}
-• Conversion Rate: {stats['conversion_rate']:.1f}%
-
-🔗 **Affiliate Link:**
-https://t.me/your_bot_username?start={affiliate_id}
-
-📝 **Instructions:**
-Share this link with your audience. When users click it and start the bot, they'll be tracked as your referrals."""
-    
-    keyboard = [
-        [InlineKeyboardButton("🔙 Affiliate List", callback_data='admin_affiliates')],
-        [InlineKeyboardButton("👑 Admin Panel", callback_data='admin')]
-    ]
-    
-    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
-
-async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    
-    # Log user activity
-    bot.log_user_activity(query.from_user.id)
-    
-    if query.data == 'check':
-        await handle_arbitrage_check(query)
-    elif query.data == 'trusted':
-        await show_trusted_symbols(query)
-    elif query.data == 'premium':
-        await show_premium_info(query)
-    elif query.data == 'help':
-        await show_help(query)
-    elif query.data == 'admin' and query.from_user.id == ADMIN_USER_ID:
-        await show_admin_panel(query)
-    elif query.data == 'list_premium' and query.from_user.id == ADMIN_USER_ID:
-        await list_premium_users(query)
-    elif query.data == 'back':
-        await show_main_menu(query)
-    elif query.data == 'activate_license':
-        await show_license_activation(query)
-    elif query.data == 'admin_messages' and query.from_user.id == ADMIN_USER_ID:
-        await show_admin_messages_menu(query)
-    elif query.data == 'admin_stats' and query.from_user.id == ADMIN_USER_ID:
-        await show_admin_stats(query)
-    elif query.data == 'admin_affiliates' and query.from_user.id == ADMIN_USER_ID:
-        await show_admin_affiliates(query)
-    elif query.data == 'send_to_all' and query.from_user.id == ADMIN_USER_ID:
-        await prompt_admin_message(query, 'all')
-    elif query.data == 'send_to_free' and query.from_user.id == ADMIN_USER_ID:
-        await prompt_admin_message(query, 'free')
-    elif query.data == 'send_to_premium' and query.from_user.id == ADMIN_USER_ID:
-        await prompt_admin_message(query, 'premium')
-    elif query.data == 'send_to_specific' and query.from_user.id == ADMIN_USER_ID:
-        await prompt_admin_message(query, 'specific')
-    elif query.data.startswith('affiliate_') and query.from_user.id == ADMIN_USER_ID:
-        affiliate_id = query.data.replace('affiliate_', '')
-        await show_affiliate_details(query, affiliate_id)
-    elif query.data == 'create_affiliate' and query.from_user.id == ADMIN_USER_ID:
-        await query.edit_message_text(
-            "Please use the /createaffiliate command with the affiliate name.\n"
-            "Example: /createaffiliate CryptoInfluencer",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Affiliate List", callback_data='admin_affiliates')]])
-        )
-
-async def check_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle the /check command."""
-    user = update.effective_user
-    bot.log_user_activity(user.id)
-    
-    message = await update.message.reply_text("🔍 Scanning for arbitrage opportunities...")
-    
-    opportunities = await bot.get_arbitrage_opportunities(user.id)
-    
-    if not opportunities:
-        await message.edit_text(
-            "No significant arbitrage opportunities found at the moment.\n\n"
-            "Try again later or check /trusted for supported coins."
-        )
-        return
-    
-    is_premium = bot.is_premium_user(user.id)
-    max_display = 10 if is_premium or user.id == ADMIN_USER_ID else 3
-    
-    text = "💰 *Arbitrage Opportunities*\n\n"
-    for i, opp in enumerate(opportunities[:max_display], 1):
-        text += (
-            f"*{i}. {opp['symbol']}*\n"
-            f"• Buy at: {opp['exchange1']} ({opp['price1']:.8f})\n"
-            f"• Sell at: {opp['exchange2']} ({opp['price2']:.8f})\n"
-            f"• Profit: *{opp['profit_percent']:.2f}%*\n\n"
-        )
-    
-    if len(opportunities) > max_display:
-        text += f"Showing {max_display} of {len(opportunities)} opportunities.\n"
-        if not is_premium:
-            text += "Upgrade to premium to see all opportunities.\n"
-    
-    text += "\n⚠️ Always check withdrawal fees and transfer times!"
-    
-    keyboard = [
-        [InlineKeyboardButton("🔄 Refresh", callback_data='check')],
-        [InlineKeyboardButton("🔙 Main Menu", callback_data='back')]
-    ]
-    
-    await message.edit_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
-
-async def add_premium_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle the /addpremium command."""
-    if update.effective_user.id != ADMIN_USER_ID:
-        await update.message.reply_text("❌ Access denied. Admin only command.")
-        return
-    
-    if not context.args:
-        await update.message.reply_text("Usage: /addpremium <user_id> [days]\nExample: /addpremium 123456789 30")
-        return
-    
-    try:
-        user_id = int(context.args[0])
-        days = int(context.args[1]) if len(context.args) > 1 else 30
-    except ValueError:
-        await update.message.reply_text("Invalid user ID or days. Both must be numbers.")
-        return
-    
-    conn = bot.get_db_connection()
-    try:
-        with conn.cursor() as cursor:
-            # Get username
-            cursor.execute('SELECT username FROM users WHERE user_id = %s', (user_id,))
-            result = cursor.fetchone()
-            username = result[0] if result else ""
-            
-            # Add to premium users
-            subscription_end = datetime.now() + timedelta(days=days)
-            cursor.execute('''
-                INSERT INTO premium_users (user_id, username, added_by_admin, subscription_end)
-                VALUES (%s, %s, TRUE, %s)
-                ON CONFLICT (user_id) 
-                DO UPDATE SET 
-                    username = EXCLUDED.username,
-                    subscription_end = EXCLUDED.subscription_end
-            ''', (user_id, username, subscription_end))
-            
-            # Update user table
-            cursor.execute('''
-                UPDATE users 
-                SET is_premium = TRUE, 
-                    subscription_end = %s
-                WHERE user_id = %s
-            ''', (subscription_end, user_id))
-            
-            conn.commit()
-            
-            # Update in-memory cache
-            bot.premium_users.add(user_id)
-            
-            await update.message.reply_text(
-                f"✅ User {user_id} ({username}) added as premium for {days} days.\n"
-                f"Subscription valid until: {subscription_end.date()}"
-            )
-    except Exception as e:
-        logger.error(f"Error adding premium user: {e}")
-        await update.message.reply_text("❌ Error adding premium user.")
-
-async def remove_premium_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle the /removepremium command."""
-    if update.effective_user.id != ADMIN_USER_ID:
-        await update.message.reply_text("❌ Access denied. Admin only command.")
-        return
-    
-    if not context.args:
-        await update.message.reply_text("Usage: /removepremium <user_id>\nExample: /removepremium 123456789")
-        return
-    
-    try:
-        user_id = int(context.args[0])
-    except ValueError:
-        await update.message.reply_text("Invalid user ID. Must be a number.")
-        return
-    
-    conn = bot.get_db_connection()
-    try:
-        with conn.cursor() as cursor:
-            # Remove from premium users
-            cursor.execute('DELETE FROM premium_users WHERE user_id = %s', (user_id,))
-            
-            # Update user table
-            cursor.execute('''
-                UPDATE users 
-                SET is_premium = FALSE, 
-                    subscription_end = NULL
-                WHERE user_id = %s
-            ''', (user_id,))
-            
-            conn.commit()
-            
-            # Update in-memory cache
-            if user_id in bot.premium_users:
-                bot.premium_users.remove(user_id)
-            
-            await update.message.reply_text(f"✅ User {user_id} removed from premium.")
-    except Exception as e:
-        logger.error(f"Error removing premium user: {e}")
-        await update.message.reply_text("❌ Error removing premium user.")
-
-async def list_premium_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle the /listpremium command."""
-    if update.effective_user.id != ADMIN_USER_ID:
-        await update.message.reply_text("❌ Access denied. Admin only command.")
-        return
-    
-    conn = bot.get_db_connection()
-    try:
-        with conn.cursor() as cursor:
-            cursor.execute('''
-                SELECT user_id, username, subscription_end 
-                FROM premium_users 
-                ORDER BY subscription_end DESC
-            ''')
-            results = cursor.fetchall()
-            
-            text = "💎 *Premium Users*\n\n"
-            for row in results:
-                user_id, username, sub_end = row
-                text += f"• {username or 'Unknown'} ({user_id})\n"
-                text += f"  └ Valid until: {sub_end}\n"
-            
-            await update.message.reply_text(text, parse_mode='Markdown')
-    except Exception as e:
-        logger.error(f"Error listing premium users: {e}")
-        await update.message.reply_text("Error fetching premium users list.")
-
-async def admin_check_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle the /admincheck command."""
-    if update.effective_user.id != ADMIN_USER_ID:
-        await update.message.reply_text("❌ Access denied. Admin only command.")
-        return
-    
-    message = await update.message.reply_text("🔍 Scanning for arbitrage opportunities (admin mode)...")
-    
-    opportunities = await bot.get_arbitrage_opportunities(ADMIN_USER_ID)
-    
-    if not opportunities:
-        await message.edit_text("No arbitrage opportunities found at the moment.")
-        return
-    
-    text = "💰 *Admin Arbitrage Opportunities*\n\n"
-    for i, opp in enumerate(opportunities[:20], 1):
-        text += (
-            f"*{i}. {opp['symbol']}*\n"
-            f"• Buy at: {opp['exchange1']} ({opp['price1']:.8f})\n"
-            f"• Sell at: {opp['exchange2']} ({opp['price2']:.8f})\n"
-            f"• Profit: *{opp['profit_percent']:.2f}%*\n\n"
-        )
-    
-    text += "\n⚠️ Admin mode shows all opportunities without restrictions."
-    
-    keyboard = [
-        [InlineKeyboardButton("🔄 Refresh", callback_data='check')],
-        [InlineKeyboardButton("🔙 Main Menu", callback_data='back')]
-    ]
-    
-    await message.edit_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
-
-async def price_check_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle the /price command."""
-    if not context.args:
-        await update.message.reply_text("Usage: /price <symbol>\nExample: /price BTCUSDT")
-        return
-    
-    symbol = context.args[0].upper()
-    if not symbol.endswith('USDT'):
-        symbol += 'USDT'
-    
-    # Get fresh data if cache is stale
-    current_time = time.time()
-    if (current_time - bot.cache_timestamp) > bot.cache_duration:
-        with bot.cache_lock:
-            if (current_time - bot.cache_timestamp) > bot.cache_duration:
-                await bot._fetch_fresh_data()
-    
-    if not bot.cache_data:
-        await update.message.reply_text("Price data not available at the moment. Try again later.")
-        return
-    
-    prices = {}
-    for exchange, exchange_data in bot.cache_data.items():
-        if exchange_data and symbol in exchange_data:
-            prices[exchange] = exchange_data[symbol]
-    
-    if not prices:
-        await update.message.reply_text(f"No price data found for {symbol}.")
-        return
-    
-    text = f"💰 *Price Check: {symbol}*\n\n"
-    for exchange, price in sorted(prices.items(), key=lambda x: x[1]):
-        text += f"• {exchange}: {price:.8f}\n"
-    
-    min_exchange = min(prices.items(), key=lambda x: x[1])[0]
-    max_exchange = max(prices.items(), key=lambda x: x[1])[0]
-    min_price = prices[min_exchange]
-    max_price = prices[max_exchange]
-    profit_percent = ((max_price - min_price) / min_price) * 100
-    
-    text += f"\n🔍 Arbitrage Opportunity:\n"
-    text += f"• Buy at: {min_exchange} ({min_price:.8f})\n"
-    text += f"• Sell at: {max_exchange} ({max_price:.8f})\n"
-    text += f"• Profit: *{profit_percent:.2f}%*\n"
-    
-    await update.message.reply_text(text, parse_mode='Markdown')
-
-async def create_affiliate_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_USER_ID:
-        await update.message.reply_text("❌ Access denied. Admin only command.")
-        return
-    
-    if not context.args:
-        await update.message.reply_text("Usage: /createaffiliate <name> [user_id]\nExample: /createaffiliate CryptoInfluencer 123456789")
-        return
-    
-    name = ' '.join(context.args[:-1]) if len(context.args) > 1 else context.args[0]
-    user_id = int(context.args[-1]) if len(context.args) > 1 and context.args[-1].isdigit() else None
-    
-    affiliate_id = bot.create_affiliate(name, user_id)
-    if affiliate_id:
-        await update.message.reply_text(
-            f"✅ Affiliate '{name}' created successfully!\n\n"
-            f"🔗 Affiliate Link:\n"
-            f"https://t.me/your_bot_username?start={affiliate_id}\n\n"
-            f"Share this link to track referrals."
-        )
-    else:
-        await update.message.reply_text("❌ Failed to create affiliate.")
-
-async def affiliate_stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_USER_ID:
-        await update.message.reply_text("❌ Access denied. Admin only command.")
-        return
-    
-    affiliates = bot.get_all_affiliates()
-    
-    if not affiliates:
-        await update.message.reply_text("No affiliates created yet.")
-        return
-    
-    text = "👥 **Affiliate Statistics**\n\n"
-    for i, aff in enumerate(affiliates, 1):
-        text += f"{i}. {aff['name']}\n"
-        text += f"   └ Referrals: {aff['referred_users']}\n"
-        text += f"   └ Premium: {aff['premium_conversions']}\n"
-        text += f"   └ Conversion: {aff['conversion_rate']:.1f}%\n\n"
-    
-    await update.message.reply_text(text)
-
-async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_USER_ID:
-        await update.message.reply_text("❌ Access denied. Admin only command.")
-        return
-    
-    growth_stats = bot.get_user_growth()
-    active_users = bot.get_active_users()
-    
-    text = """📊 **Bot Statistics**
-
-👥 **Users:**
-• Total users: {}
-• New today: {}
-• New this week: {}
-• New this month: {}
-• Premium users: {}
-• Free users: {}
-
-📈 **Data:**
-• Exchanges monitored: {}
-• Trusted symbols: {}
-• Arbitrage records: {}
-
-🏆 **Most Active Users (7 days):**
-""".format(
-        growth_stats.get('total_users', 0),
-        growth_stats.get('new_users_today', 0),
-        growth_stats.get('new_users_week', 0),
-        growth_stats.get('new_users_month', 0),
-        len(bot.premium_users),
-        growth_stats.get('total_users', 0) - len(bot.premium_users),
-        len(bot.exchanges), 
-        len(bot.trusted_symbols),
-        "..."
-    )
-    
-    for i, user in enumerate(active_users[:5], 1):
-        text += f"{i}. {user['username']} - {user['activity_count']} commands\n"
-    
-    await update.message.reply_text(text)
 
 async def handle_license_activation(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle license key messages"""
     user = update.effective_user
     license_key = update.message.text.strip()
     
-    # Debug: License key format check
+    # Debug: License key formatını kontrol et
     logger.info(f"Received license key from user {user.id}: '{license_key}'")
     logger.info(f"License key length: {len(license_key)}")
     
-    # License key format check
+    # License key format kontrolü (Gumroad format: XXXXXXXX-XXXXXXXX-XXXXXXXX-XXXXXXXX)
     if not license_key or len(license_key) < 10:
         logger.info("License key too short, ignoring")
-        return
+        return  # Not a license key, ignore
     
+    # Daha detaylı format kontrolü
     if not any(c.isalnum() for c in license_key):
         logger.info("License key contains no alphanumeric characters, ignoring")
         return
@@ -1780,9 +1162,6 @@ async def handle_license_activation(update: Update, context: ContextTypes.DEFAUL
         verification_result.get('purchase', {})
     )
     
-    # Track license activation for affiliate
-    bot.track_license_activation(user.id)
-    
     await update.message.reply_text(
         "✅ **License Activated Successfully!**\n\n"
         "🎉 Welcome to Premium Membership!\n"
@@ -1791,21 +1170,447 @@ async def handle_license_activation(update: Update, context: ContextTypes.DEFAUL
         "Use /start to see your premium status!"
     )
 
-def get_user_id_by_username(self, username: str) -> Optional[int]:
-    """Get user ID by username."""
-    conn = self.get_db_connection()
-    try:
-        with conn.cursor() as cursor:
-            cursor.execute('SELECT user_id FROM users WHERE username = %s', (username,))
-            result = cursor.fetchone()
-            return result[0] if result else None
-    except Exception as e:
-        logger.error(f"Error getting user ID by username: {e}")
-        return None
+async def show_premium_info(query):
+    user_id = query.from_user.id
+    is_premium = bot.is_premium_user(user_id)
+    
+    if is_premium:
+        text = """💎 **Premium Member Benefits**
+        
+✅ **Active Premium Features:**
+- Unlimited arbitrage scanning
+- Full profit range display (up to 20%)
+- Access to all exchanges data
+- Advanced security filters
+- Volume-based validation
+- Historical data storage
+- Priority support
+- **📈 Specific Coin Price Analysis with Safety Check**
+
+📊 **Statistics:**
+- {} exchanges monitored
+- {} trusted cryptocurrencies
+- Real-time price monitoring
+
+🔄 **Your subscription is active**
+
+📞 **Support:** {}""".format(len(bot.exchanges), len(bot.trusted_symbols), SUPPORT_USERNAME)
+    else:
+        text = """💎 **Premium Membership Benefits**
+
+🆓 **Free Account Limitations:**
+- Max 2% profit rate display
+- Limited opportunities shown
+- Basic security filters
+- **🚫 Specific Coin Price Analysis not available**
+
+💎 **Premium Benefits:**
+- Full profit range (up to 20%)
+- Unlimited opportunities
+- {} exchanges access
+- {} trusted coins validation
+- Advanced security filters
+- Volume analysis
+- Historical data
+- Priority support
+- **📈 Specific Coin Price Analysis with Safety Check**
+
+💰 **Get Premium Access:**
+🛒 Purchase subscription below
+
+📞 **Support:** {}""".format(len(bot.exchanges), len(bot.trusted_symbols), SUPPORT_USERNAME)
+    
+    if is_premium:
+        keyboard = [[InlineKeyboardButton("🔙 Back", callback_data='back')]]
+    else:
+        keyboard = [
+            [InlineKeyboardButton("💎 Buy Premium", url=GUMROAD_LINK)],
+            [InlineKeyboardButton("🔑 Activate License", callback_data='activate_license')],
+            [InlineKeyboardButton("🔙 Back", callback_data='back')]
+    ]
+    
+    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
 
 async def start_background_tasks(app):
     """Background task'ları başlat"""
     asyncio.create_task(bot.cache_refresh_task())
+
+async def show_help(query):
+    text = """ℹ️ **Bot Usage Guide**
+
+🔍 **Main Features:**
+• Real-time arbitrage scanning
+• {} exchanges supported
+• Security filters active
+• Volume-based validation
+• **📈 Specific Coin Price Analysis (Premium)**
+
+📋 **Commands:**
+/start - Start the bot
+/check - Quick arbitrage scan
+/premium - Premium information
+/help - Show this help
+/price <symbol> - Check specific coin price (Premium)
+
+🔒 **Security Features:**
+• Suspicious coin detection
+• Volume threshold filtering
+• Price ratio validation
+• Trusted symbols priority
+
+📊 **Data Sources:**
+Multiple cryptocurrency exchanges with real-time price feeds
+
+📞 **Support:** {}""".format(len(bot.exchanges), SUPPORT_USERNAME)
+    
+    keyboard = [[InlineKeyboardButton("🔙 Back", callback_data='back')]]
+    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+
+async def show_admin_panel(query):
+    text = """👑 **Admin Panel**
+    
+📊 **Statistics:**
+• Total premium users: {}
+• Total exchanges: {}
+• Trusted symbols: {}
+
+🛠️ **Available Commands:**
+• /addpremium <user_id> [days] - Add premium user
+• /removepremium <user_id> - Remove premium user
+• /listpremium - List all premium users
+• /stats - Bot statistics
+• /admincheck - Admin arbitrage check (Huobi excluded, 40% max profit)
+
+📋 **Quick Actions:**""".format(
+        len(bot.premium_users), 
+        len(bot.exchanges), 
+        len(bot.trusted_symbols)
+    )
+    
+    keyboard = [
+        [InlineKeyboardButton("📋 List Premium Users", callback_data='list_premium')],
+        [InlineKeyboardButton("🔙 Main Menu", callback_data='back')]
+    ]
+    
+    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+
+async def list_premium_users(query):
+    users = bot.get_premium_users_list()
+    
+    if not users:
+        text = "📋 **Premium Users List**\n\nNo premium users found."
+    else:
+        text = f"📋 **Premium Users List** ({len(users)} users)\n\n"
+        for i, user in enumerate(users[:20], 1):  # Show max 20 users
+            text += f"{i}. **{user['username']}** (ID: {user['user_id']})\n"
+            text += f"   └ Until: {user['subscription_end']}\n"
+    
+    keyboard = [
+        [InlineKeyboardButton("🔄 Refresh", callback_data='list_premium')],
+        [InlineKeyboardButton("🔙 Admin Panel", callback_data='admin')]
+    ]
+    
+    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+
+# Admin Commands
+async def remove_premium_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_USER_ID:
+        await update.message.reply_text("❌ Access denied. Admin only command.")
+        return
+    
+    if not context.args or len(context.args) < 1:
+        await update.message.reply_text(
+            "Usage: /removepremium <user_id_or_username>\n"
+            "Example: /removepremium 123456789\n"
+            "Example: /removepremium @username"
+        )
+        return
+    
+    try:
+        user_input = context.args[0]
+        
+        if user_input.isdigit():
+            # User ID
+            user_id = int(user_input)
+            bot.remove_premium_user(user_id)
+            await update.message.reply_text(f"✅ User {user_id} removed from premium.")
+        else:
+            # Username
+            username = user_input.replace('@', '')
+            user_id = await get_user_id_by_username(username)
+            
+            if user_id:
+                bot.remove_premium_user(user_id)
+                await update.message.reply_text(f"✅ User @{username} (ID: {user_id}) removed from premium.")
+            else:
+                await update.message.reply_text(f"❌ User @{username} not found in database.")
+        
+    except ValueError:
+        await update.message.reply_text("❌ Invalid user ID. Use numbers only.")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Error: {str(e)}")
+
+async def add_premium_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_USER_ID:
+        await update.message.reply_text("❌ Access denied. Admin only command.")
+        return
+    
+    if not context.args or len(context.args) < 1:
+        await update.message.reply_text(
+            "Usage: /addpremium <user_id_or_username> [days]\n"
+            "Example: /addpremium 123456789 30\n"
+            "Example: /addpremium @username 30\n"
+            "Example: /addpremium username 30"
+        )
+        return
+    
+    try:
+        user_input = context.args[0]
+        days = int(context.args[1]) if len(context.args) > 1 else 30
+        
+        # Kullanıcı ID mi username mi kontrol et
+        if user_input.isdigit():
+            # User ID
+            user_id = int(user_input)
+            bot.add_premium_user(user_id, "", days)
+            await update.message.reply_text(f"✅ User {user_id} added as premium for {days} days.")
+        else:
+            # Username
+            username = user_input.replace('@', '')  # @ işaretini kaldır
+            user_id = await get_user_id_by_username(username)
+            
+            if user_id:
+                bot.add_premium_user(user_id, username, days)
+                await update.message.reply_text(f"✅ User @{username} (ID: {user_id}) added as premium for {days} days.")
+            else:
+                await update.message.reply_text(f"❌ User @{username} not found in database. User must start the bot first.")
+        
+    except ValueError:
+        await update.message.reply_text("❌ Invalid days parameter. Use numbers only for days.")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Error: {str(e)}")
+
+async def get_user_id_by_username(username: str) -> int:
+    """Get user ID by username from PostgreSQL database"""
+    return bot.get_user_id_by_username(username)
+
+async def list_premium_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_USER_ID:
+        await update.message.reply_text("❌ Access denied. Admin only command.")
+        return
+    
+    users = bot.get_premium_users_list()
+    
+    if not users:
+        await update.message.reply_text("📋 No premium users found.")
+        return
+    
+    text = f"📋 **Premium Users** ({len(users)} total)\n\n"
+    for i, user in enumerate(users[:30], 1):
+        text += f"{i}. {user['username']} (ID: {user['user_id']})\n"
+        text += f"   Until: {user['subscription_end']}\n\n"
+    
+    if len(users) > 30:
+        text += f"... and {len(users) - 30} more users"
+    
+    await update.message.reply_text(text)
+
+async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_USER_ID:
+        await update.message.reply_text("❌ Access denied. Admin only command.")
+        return
+    
+    conn = bot.get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            # Get total users
+            cursor.execute('SELECT COUNT(*) FROM users')
+            total_users = cursor.fetchone()[0]
+            
+            # Get arbitrage data count
+            cursor.execute('SELECT COUNT(*) FROM arbitrage_data')
+            total_arbitrage_records = cursor.fetchone()[0]
+    except Exception as e:
+        logger.error(f"Error fetching stats from database: {e}")
+        total_users = 0
+        total_arbitrage_records = 0
+    
+    text = f"""📊 **Bot Statistics**
+
+👥 **Users:**
+• Total users: {total_users}
+• Premium users: {len(bot.premium_users)}
+• Free users: {total_users - len(bot.premium_users)}
+
+📈 **Data:**
+• Exchanges monitored: {len(bot.exchanges)}
+• Trusted symbols: {len(bot.trusted_symbols)}
+• Arbitrage records: {total_arbitrage_records}
+
+🔒 **Security:**
+• Volume threshold: ${bot.min_volume_threshold:,}
+• Max profit threshold: {bot.max_profit_threshold}%
+• Free user limit: {bot.free_user_max_profit}%
+
+⚡ **System:**
+• Bot status: Active
+• Database: Connected"""
+    
+    await update.message.reply_text(text)
+
+async def admin_check_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Sadece adminler için Huobi hariç ve %40 limitli arbitraj kontrolü"""
+    if update.effective_user.id != ADMIN_USER_ID:
+        await update.message.reply_text("❌ Access denied. Admin only command.")
+        return
+    
+    user = update.effective_user
+    bot.save_user(user.id, user.username or "")
+    
+    msg = await update.message.reply_text("🔍 [ADMIN] Scanning exchanges (Huobi excluded, 40% max profit)...")
+    
+    await asyncio.sleep(3)
+    
+    opportunities = await bot.get_admin_arbitrage_data()
+    
+    if not opportunities:
+        await msg.edit_text("❌ No arbitrage opportunities found (Huobi excluded, max 40% profit).")
+        return
+    
+    text = "💎 **Admin Arbitrage (Huobi Excluded, Max 40% Profit)**\n\n"
+    
+    for i, opp in enumerate(opportunities[:20], 1):  # Max 20 fırsat göster
+        trust_icon = "✅" if opp['symbol'] in bot.trusted_symbols else "🔍"
+        text += f"{i}. {trust_icon} {opp['symbol']}\n"
+        text += f"   ⬇️ Buy: {opp['buy_exchange']} ${opp['buy_price']:.6f}\n"
+        text += f"   ⬆️ Sell: {opp['sell_exchange']} ${opp['sell_price']:.6f}\n"
+        text += f"   💰 Profit: {opp['profit_percent']:.2f}%\n"
+        text += f"   📊 Volume: ${opp['avg_volume']:,.0f}\n\n"
+        
+        # Veriyi kaydet
+        bot.save_arbitrage_data(opp)
+    
+    await msg.edit_text(text)
+
+async def price_check_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    user_id = user.id
+    is_premium = bot.is_premium_user(user_id)
+    is_admin = (user_id == ADMIN_USER_ID)
+
+    if not is_premium and not is_admin:
+        await update.message.reply_text(
+            "🔒 This feature is for **Premium Users Only**.\n\n"
+            "💎 Upgrade to Premium to access: \n"
+            "• Specific Coin Price Analysis with Safety Check\n"
+            "• Unlimited Arbitrage Scanning\n"
+            "• And much more!\n\n"
+            "Use /premium for more info."
+        )
+        return
+
+    if not context.args:
+        await update.message.reply_text("Usage: /price <SYMBOL>\nExample: /price BTCUSDT")
+        return
+
+    symbol_to_check = context.args[0].upper()
+    
+    msg = await update.message.reply_text(f"🔄 Fetching data and analyzing safety for **{symbol_to_check}**...")
+
+    try:
+        # Fetch all exchange data first
+        all_exchange_data = await bot.get_all_prices_with_volume()
+
+        # Extract data for the specific symbol across all exchanges for safety check
+        symbol_specific_exchange_data = {}
+        for exchange_name, data_for_exchange in all_exchange_data.items():
+            normalized_symbol = bot.normalize_symbol(symbol_to_check, exchange_name)
+            if normalized_symbol in data_for_exchange:
+                symbol_specific_exchange_data[exchange_name] = data_for_exchange[normalized_symbol]
+
+        # Perform security filter check using the extracted symbol-specific data
+        is_safe, safety_reason = bot.is_symbol_safe(symbol_to_check, symbol_specific_exchange_data)
+
+        safety_text = f"🛡️ **Security Check for {symbol_to_check}:**\n{safety_reason}\n\n"
+
+        if not is_safe:
+            await msg.edit_text(f"❌ Security check failed for **{symbol_to_check}**.\n\n{safety_text}")
+            return
+
+        # If safe, proceed to fetch and display prices
+        found_prices = []
+        for exchange_name, data_for_exchange in symbol_specific_exchange_data.items():
+            price = data_for_exchange['price']
+            if price > 0: # Only include valid prices
+                found_prices.append((exchange_name, price))
+        
+        if not found_prices:
+            await msg.edit_text(f"❌ **{symbol_to_check}** not found on any monitored exchange, or prices are unavailable.\n\n{safety_text}")
+            return
+
+        text = f"📈 **{symbol_to_check} Prices Across Exchanges**\n\n"
+        
+        # Display prices from cheapest to most expensive
+        found_prices.sort(key=lambda x: x[1]) # Re-sort to ensure cheapest-to-expensive order
+        for exchange, price in found_prices:
+            text += f"• {exchange.capitalize()}: `${price:.6f}`\n"
+        
+        # Calculate and display price difference
+        cheapest_exchange, cheapest_price = found_prices[0]
+        most_expensive_exchange, most_expensive_price = found_prices[-1]
+        
+        price_difference = most_expensive_price - cheapest_price
+        
+        if cheapest_price > 0:
+            percentage_difference = (price_difference / cheapest_price) * 100
+            text += f"\nLowest Price: {cheapest_exchange.capitalize()} `${cheapest_price:.6f}`\n"
+            text += f"Highest Price: {most_expensive_exchange.capitalize()} `${most_expensive_price:.6f}`\n"
+            text += f"Absolute Difference: `${price_difference:.6f}`\n"
+            text += f"Percentage Difference: `{percentage_difference:.2f}%`\n\n"
+        else:
+             text += "\nCould not calculate percentage difference (cheapest price is zero).\n\n"
+
+        text += safety_text # Add safety text at the end
+
+        await msg.edit_text(text)
+
+    except Exception as e:
+        logger.error(f"Error in price_check_command for {symbol_to_check}: {e}")
+        await msg.edit_text(f"❌ An error occurred while fetching prices for **{symbol_to_check}**.")
+
+
+# Quick check command
+async def check_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    bot.save_user(user.id, user.username or "")
+    
+    msg = await update.message.reply_text("🔄 Scanning arbitrage opportunities...")
+    
+    # 3 saniye bekle
+    await asyncio.sleep(3)
+    
+    all_data = await bot.get_all_prices_with_volume()
+    is_premium = bot.is_premium_user(user.id)
+    
+    opportunities = bot.calculate_arbitrage(all_data, is_premium)
+    
+    if not opportunities:
+        await msg.edit_text("❌ No safe arbitrage opportunities found at the moment.")
+        return
+    
+    text = f"🔍 Quick Arbitrage Scan Results:\n\n"
+    
+    max_opps = 10 if is_premium else 5
+    for i, opp in enumerate(opportunities[:max_opps], 1):
+        trust_icon = "✅" if opp['symbol'] in bot.trusted_symbols else "🔍"
+        text += f"{i}. {trust_icon} {opp['symbol']}\n"
+        text += f"   💰 {opp['profit_percent']:.2f}% profit\n"
+        text += f"   📊 ${opp['avg_volume']:,.0f} volume\n\n"
+    
+    if not is_premium and len(opportunities) > max_opps:
+        text += f"💎 {len(opportunities) - max_opps} more opportunities available with premium!"
+    
+    await msg.edit_text(text)
 
 def main():
     TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -1832,19 +1637,10 @@ def main():
     app.add_handler(CommandHandler("listpremium", list_premium_command))
     app.add_handler(CommandHandler("stats", stats_command))
     app.add_handler(CommandHandler("admincheck", admin_check_command))
-    app.add_handler(CommandHandler("price", price_check_command))
-    app.add_handler(CommandHandler("createaffiliate", create_affiliate_command))
-    app.add_handler(CommandHandler("affiliatestats", affiliate_stats_command))
+    app.add_handler(CommandHandler("price", price_check_command)) # Yeni komut handler'ı
     
-    # Message handlers
-    app.add_handler(MessageHandler(
-        filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE,
-        handle_license_activation
-    ))
-    app.add_handler(MessageHandler(
-        filters.TEXT & ~filters.COMMAND & filters.Chat(ADMIN_USER_ID),
-        handle_admin_message
-    ))
+    # Message handlers (command handlers'dan sonra)
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_license_activation))
     
     # Callback handlers
     app.add_handler(CallbackQueryHandler(button_handler))
@@ -1852,18 +1648,22 @@ def main():
     async def cleanup():
         if bot.session and not bot.session.closed:
             await bot.session.close()
-        if bot.conn and not bot.conn.closed:
-            bot.conn.close()
-            logger.info("PostgreSQL database connection closed.")
+        if bot.conn and not bot.conn.closed: # Add this line for PostgreSQL connection
+            bot.conn.close()                 # Add this line
+            logger.info("PostgreSQL database connection closed.") # Add this line
     
     app.post_stop = cleanup
+    
+    app.run_polling()
     
     logger.info("Advanced Arbitrage Bot starting...")
     logger.info(f"Monitoring {len(bot.exchanges)} exchanges")
     logger.info(f"Tracking {len(bot.trusted_symbols)} trusted symbols")
     logger.info(f"Premium users loaded: {len(bot.premium_users)}")
     
-    app.run_polling()
+    # app.run_polling() # This line is redundant, should be removed for cleaner code.
+                      # app.run_polling() is already called above.
+                      # Keeping it for now as per original structure, but ideal fix would be to remove.
 
 if __name__ == '__main__':
     main()
