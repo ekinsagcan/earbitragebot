@@ -1952,7 +1952,9 @@ def main():
     app.add_handler(CommandHandler("listpremium", list_premium_command))
     app.add_handler(CommandHandler("stats", stats_command))
     app.add_handler(CommandHandler("admincheck", admin_check_command))
-    app.add_handler(CommandHandler("price", price_check_command)) # Yeni komut handler'ı
+    app.add_handler(CommandHandler("price", price_check_command))
+    
+    # Yeni affiliate komutları
     app.add_handler(CommandHandler("createaffiliate", create_affiliate_command))
     app.add_handler(CommandHandler("affiliatestats", affiliate_stats_command))
     
@@ -1965,9 +1967,9 @@ def main():
     async def cleanup():
         if bot.session and not bot.session.closed:
             await bot.session.close()
-        if bot.conn and not bot.conn.closed: # Add this line for PostgreSQL connection
-            bot.conn.close()                 # Add this line
-            logger.info("PostgreSQL database connection closed.") # Add this line
+        if bot.conn and not bot.conn.closed:
+            bot.conn.close()
+            logger.info("PostgreSQL database connection closed.")
     
     app.post_stop = cleanup
     
@@ -1977,10 +1979,6 @@ def main():
     logger.info(f"Monitoring {len(bot.exchanges)} exchanges")
     logger.info(f"Tracking {len(bot.trusted_symbols)} trusted symbols")
     logger.info(f"Premium users loaded: {len(bot.premium_users)}")
-    
-    # app.run_polling() # This line is redundant, should be removed for cleaner code.
-                      # app.run_polling() is already called above.
-                      # Keeping it for now as per original structure, but ideal fix would be to remove.
 
 if __name__ == '__main__':
     main()
