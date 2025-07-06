@@ -235,6 +235,62 @@ class ArbitrageBot:
     
         return await self._fetch_fresh_data(is_premium)
 
+    def update_arbitrage_table(self):
+        """Add user_id column to arbitrage_data table if it doesn't exist"""
+        conn = self.get_db_connection()
+        try:
+            with conn.cursor() as cursor:
+                # Check if column exists
+                cursor.execute("""
+                    SELECT column_name 
+                    FROM information_schema.columns 
+                    WHERE table_name='arbitrage_data' AND column_name='user_id'
+                """)
+                if not cursor.fetchone():
+                    # Add the column if it doesn't exist
+                    cursor.execute("""
+                        ALTER TABLE arbitrage_data 
+                        ADD COLUMN user_id BIGINT,
+                        ADD FOREIGN KEY (user_id) REFERENCES users(user_id)
+                    """)
+                    conn.commit()
+                    logger.info("Added user_id column to arbitrage_data table")
+                else:
+                   logger.info("user_id column already exists in arbitrage_data")
+        except Exception as e:
+            logger.error(f"Error updating arbitrage_data table: {e}")
+            conn.rollback()
+        finally:
+            if conn:
+                conn.close()
+
+    def save_arbitrage_data(self, opportunity: Dict, user_id: int = None):
+        """Save arbitrage data to PostgreSQL with user_id"""
+        conn = self.get_db_connection()
+        try:
+            with conn.cursor() as cursor:
+                cursor.execute('''
+                    INSERT INTO arbitrage_data 
+                    (symbol, exchange1, exchange2, price1, price2, 
+                     profit_percent, volume_24h, user_id)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                ''', (
+                    opportunity['symbol'],
+                    opportunity['buy_exchange'],
+                    opportunity['sell_exchange'],
+                    opportunity['buy_price'],
+                    opportunity['sell_price'],
+                    opportunity['profit_percent'],
+                    opportunity['avg_volume'],
+                    user_id
+                ))
+            conn.commit()
+        except Exception as e:
+            logger.error(f"Error saving arbitrage data: {e}")
+            conn.rollback()
+
+
+
     def update_database_schema(self):
         conn = self.get_db_connection()
         try:
