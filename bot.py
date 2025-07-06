@@ -120,6 +120,7 @@ class ArbitrageBot:
         self.affiliate_links = {}
 
         self.conn = None
+        self._conn = None
         self._conn_lock = threading.Lock()
         self.init_database()
         self.update_arbitrage_table()
@@ -172,27 +173,23 @@ class ArbitrageBot:
         }
 
     def get_db_connection(self):
-        """Thread-safe database connection getter"""
-        if not hasattr(self, '_conn_lock'):  # Eğer lock yoksa oluştur
-            self._conn_lock = threading.Lock()
-            
-        with self._conn_lock:
-            if self._conn is None or self._conn.closed:
-                try:
-                    url = urlparse(self.DATABASE_URL)
-                    self._conn = psycopg2.connect(
-                        host=url.hostname,
-                        port=url.port,
-                        user=url.username,
-                        password=url.password,
-                        database=url.path[1:],
-                        connect_timeout=5
-                    )
-                    logger.info("Database connection established")
-                except Exception as e:
-                    logger.error(f"Database connection failed: {e}")
-                    raise
-            return self._conn
+        """Get or create a PostgreSQL database connection."""
+        if not hasattr(self, 'conn') or self.conn is None or self.conn.closed:
+            try:
+                # Parse the DATABASE_URL to get individual components
+                url = urlparse(self.DATABASE_URL)
+                self.conn = psycopg2.connect(
+                    host=url.hostname,
+                    port=url.port,
+                    user=url.username,
+                    password=url.password,
+                    database=url.path[1:]  # Slice to remove the leading '/'
+                )
+                logger.info("Successfully connected to PostgreSQL database.")
+            except Exception as e:
+                logger.error(f"Error connecting to PostgreSQL: {e}")
+                raise
+        return self.conn
 
     def close_connection(self):
         """Clean up database connection"""
