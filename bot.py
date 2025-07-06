@@ -119,17 +119,19 @@ class ArbitrageBot:
 
         self.affiliate_links = {}
 
+        # Database connection details from environment variable
+        self.DATABASE_URL = os.getenv("DATABASE_URL")
+        if not self.DATABASE_URL:
+            logger.error("DATABASE_URL environment variable not found!")
+            raise ValueError("DATABASE_URL must be set for database connection.")
+
         self.conn = None
         self._conn = None
         self._conn_lock = threading.Lock()
         self.init_database()
         self.update_arbitrage_table()
         
-        # Database connection details from environment variable
-        self.DATABASE_URL = os.getenv("DATABASE_URL")
-        if not self.DATABASE_URL:
-            logger.error("DATABASE_URL environment variable not found!")
-            raise ValueError("DATABASE_URL must be set for database connection.")
+
 
         self.conn = None
         self.init_database()
