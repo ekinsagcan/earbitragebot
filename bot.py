@@ -512,32 +512,40 @@ class ArbitrageBot:
             logger.error(f"Error tracking affiliate user: {e}")
             conn.rollback()
 
-    def get_affiliate_stats(self) -> List[Dict]:
-        """Get affiliate statistics"""
-        conn = self.get_db_connection()
-        try:
-            with conn.cursor() as cursor:
-                cursor.execute('''
-                    SELECT a.affiliate_code, a.influencer_name, a.uses, 
-                           COUNT(p.user_id) as premium_conversions
-                    FROM affiliates a
-                    LEFT JOIN affiliate_users u ON a.affiliate_code = u.affiliate_code
-                    LEFT JOIN premium_users p ON u.user_id = p.user_id
-                    GROUP BY a.affiliate_code, a.influencer_name, a.uses
-                    ORDER BY a.uses DESC
-                ''')
-                return [
-                    {
-                        'code': row[0],
-                        'name': row[1],
-                        'total_uses': row[2],
-                        'premium_conversions': row[3]
-                    }
-                    for row in cursor.fetchall()
-                ]
-        except Exception as e:
-            logger.error(f"Error getting affiliate stats: {e}")
-            return []
+def get_affiliate_stats(self) -> List[Dict]:
+    """Get affiliate statistics"""
+    conn = self.get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute('''
+                SELECT 
+                    a.affiliate_code, 
+                    a.influencer_name, 
+                    a.uses, 
+                    COUNT(p.user_id) as premium_conversions
+                FROM affiliates a
+                LEFT JOIN affiliate_users u ON a.affiliate_code = u.affiliate_code
+                LEFT JOIN premium_users p ON u.user_id = p.user_id
+                GROUP BY a.affiliate_code, a.influencer_name, a.uses
+                ORDER BY a.uses DESC
+            ''')
+            results = cursor.fetchall()
+            return [
+                {
+                    'code': row[0],
+                    'name': row[1],
+                    'total_uses': row[2],
+                    'premium_conversions': row[3] or 0
+                }
+                for row in results
+            ]
+    except Exception as e:
+        logger.error(f"Error getting affiliate stats: {e}")
+        conn.rollback()
+        return []
+    finally:
+        if conn:
+            conn.close()
             
     def activate_license_key(self, license_key: str, user_id: int, username: str, sale_data: Dict):
         """Activate license key and add premium subscription in PostgreSQL."""
