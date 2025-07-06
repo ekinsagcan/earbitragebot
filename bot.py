@@ -1543,34 +1543,57 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             cursor.execute('SELECT COUNT(*) FROM users')
             total_users = cursor.fetchone()[0]
             
+            # Get premium users
+            cursor.execute('SELECT COUNT(*) FROM premium_users')
+            premium_users = cursor.fetchone()[0]
+            
             # Get arbitrage data count
             cursor.execute('SELECT COUNT(*) FROM arbitrage_data')
             total_arbitrage_records = cursor.fetchone()[0]
+            
+            # Get most active users (by arbitrage checks)
+            cursor.execute('''
+                SELECT user_id, COUNT(*) as activity_count 
+                FROM arbitrage_data 
+                GROUP BY user_id 
+                ORDER BY activity_count DESC 
+                LIMIT 5
+            ''')
+            top_users = cursor.fetchall()
+            
+            # Get recent premium activations
+            cursor.execute('''
+                SELECT user_id, username, added_date 
+                FROM premium_users 
+                ORDER BY added_date DESC 
+                LIMIT 5
+            ''')
+            recent_premium = cursor.fetchall()
     except Exception as e:
         logger.error(f"Error fetching stats from database: {e}")
-        total_users = 0
-        total_arbitrage_records = 0
+        return await update.message.reply_text("❌ Error fetching statistics.")
     
-    text = f"""📊 **Bot Statistics**
+    text = f"""📊 **Advanced Bot Statistics**
 
 👥 **Users:**
 • Total users: {total_users}
-• Premium users: {len(bot.premium_users)}
-• Free users: {total_users - len(bot.premium_users)}
+• Premium users: {premium_users} ({premium_users/total_users*100:.1f}%)
+• Free users: {total_users - premium_users}
 
-📈 **Data:**
+📈 **Activity:**
+• Arbitrage checks: {total_arbitrage_records}
 • Exchanges monitored: {len(bot.exchanges)}
 • Trusted symbols: {len(bot.trusted_symbols)}
-• Arbitrage records: {total_arbitrage_records}
 
-🔒 **Security:**
-• Volume threshold: ${bot.min_volume_threshold:,}
-• Max profit threshold: {bot.max_profit_threshold}%
-• Free user limit: {bot.free_user_max_profit}%
-
-⚡ **System:**
-• Bot status: Active
-• Database: Connected"""
+🏆 **Top Active Users:**
+"""
+    
+    for i, (user_id, count) in enumerate(top_users, 1):
+        text += f"{i}. User ID {user_id}: {count} checks\n"
+    
+    text += "\n🆕 **Recent Premium Activations:**\n"
+    for i, (user_id, username, added_date) in enumerate(recent_premium, 1):
+        text += f"{i}. @{username or 'Unknown'} (ID: {user_id}) on {added_date}\n"
     
     await update.message.reply_text(text)
 
