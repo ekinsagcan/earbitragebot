@@ -1598,6 +1598,50 @@ async def remove_premium_command(update: Update, context: ContextTypes.DEFAULT_T
     except Exception as e:
         await update.message.reply_text(f"❌ Error: {str(e)}")
 
+async def create_affiliate_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Create an affiliate link for influencers"""
+    if update.effective_user.id != ADMIN_USER_ID:
+        await update.message.reply_text("❌ Access denied. Admin only command.")
+        return
+    
+    influencer_name = ' '.join(context.args) if context.args else update.effective_user.username
+    code = bot.create_affiliate_link(update.effective_user.id, influencer_name)
+    
+    if code:
+        await update.message.reply_text(
+            f"✅ Affiliate link created for {influencer_name}:\n\n"
+            f"https://t.me/{context.bot.username}?start={code}\n\n"
+            f"Share this link to track referrals."
+        )
+    else:
+        await update.message.reply_text("❌ Error creating affiliate link.")
+
+async def affiliate_stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show affiliate statistics"""
+    if update.effective_user.id != ADMIN_USER_ID:
+        await update.message.reply_text("❌ Access denied. Admin only command.")
+        return
+    
+    stats = bot.get_affiliate_stats()
+    
+    if not stats:
+        await update.message.reply_text("No affiliate data available.")
+        return
+    
+    text = "📊 **Affiliate Statistics**\n\n"
+    for stat in stats:
+        conversion_rate = (stat['premium_conversions'] / stat['total_uses'] * 100) if stat['total_uses'] > 0 else 0
+        text += (
+            f"👤 Influencer: {stat['name']}\n"
+            f"🔗 Code: {stat['code']}\n"
+            f"👥 Total Referrals: {stat['total_uses']}\n"
+            f"💎 Premium Conversions: {stat['premium_conversions']}\n"
+            f"📈 Conversion Rate: {conversion_rate:.1f}%\n\n"
+        )
+    
+    await update.message.reply_text(text)
+
+
 async def add_premium_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_USER_ID:
         await update.message.reply_text("❌ Access denied. Admin only command.")
