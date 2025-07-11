@@ -1111,7 +1111,7 @@ async def show_main_menu(query):
         f"✅ Security filters active\n"
         f"📊 Volume-based validation\n"
         f"🔍 Suspicious coin detection",
-        reply_markup=InlineKeyboardMarkup(keyboard))
+        reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
 async def show_license_activation(query):
