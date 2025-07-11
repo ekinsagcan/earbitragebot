@@ -1216,7 +1216,13 @@ async def show_premium_info(query):
 - **📈 Specific Coin Price Analysis with Safety Check**
 
 💰 **Get Premium Access:**
-🛒 Purchase subscription below
+🔥 LIMITED OFFER 🔥
+💎Monthly Subscription ➡️ 19.90$
+💎Quarterly Subscripton ➡️ 29.90$
+💎6 Months Subscription ➡️ 49.90$
+💎Yearly Subscription ➡️ 79.90$
+🛒 Purchase subscription from Buy Premium Button
+
 
 📞 **Support:** {}""".format(len(bot.exchanges), len(bot.trusted_symbols), SUPPORT_USERNAME)
     
