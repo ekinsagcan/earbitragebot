@@ -936,6 +936,23 @@ class ArbitrageBot:
             logger.error(f"Error getting user ID by username: {e}")
             return None
 
+    def get_all_users(self) -> List[Dict]:
+        """Get all users from PostgreSQL database."""
+        conn = self.get_db_connection()
+        try:
+            with conn.cursor() as cursor:
+                cursor.execute('SELECT user_id, username FROM users')
+                results = cursor.fetchall()
+                return [
+                    {
+                        'user_id': row[0],
+                        'username': row[1] or 'Unknown'
+                    } for row in results
+                ]
+        except Exception as e:
+            logger.error(f"Error getting all users: {e}")
+            return []
+
 # Global bot instance
 bot = ArbitrageBot()
 
@@ -991,6 +1008,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await show_main_menu(query)
     elif query.data == 'activate_license':
         await show_license_activation(query)
+    elif query.data == 'broadcast' and query.from_user.id == ADMIN_USER_ID:
+        await ask_for_broadcast_message(query)
+    elif query.data == 'cancel_broadcast' and query.from_user.id == ADMIN_USER_ID:
+        await show_admin_panel(query)
 
 async def handle_arbitrage_check(query):
     # Yüklenme mesajını göster
@@ -1090,7 +1111,7 @@ async def show_main_menu(query):
         f"✅ Security filters active\n"
         f"📊 Volume-based validation\n"
         f"🔍 Suspicious coin detection",
-        reply_markup=InlineKeyboardMarkup(keyboard)
+        reply_markup=InlineKeyboardMarkup(keyboard))
     )
 
 async def show_license_activation(query):
@@ -1289,6 +1310,7 @@ async def show_admin_panel(query):
     
     keyboard = [
         [InlineKeyboardButton("📋 List Premium Users", callback_data='list_premium')],
+        [InlineKeyboardButton("📢 Broadcast Message", callback_data='broadcast')],
         [InlineKeyboardButton("🔙 Main Menu", callback_data='back')]
     ]
     
@@ -1578,7 +1600,6 @@ async def price_check_command(update: Update, context: ContextTypes.DEFAULT_TYPE
         logger.error(f"Error in price_check_command for {symbol_to_check}: {e}")
         await msg.edit_text(f"❌ An error occurred while fetching prices for **{symbol_to_check}**.")
 
-
 # Quick check command
 async def check_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -1612,6 +1633,66 @@ async def check_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await msg.edit_text(text)
 
+# Broadcast message functions
+async def ask_for_broadcast_message(query):
+    """Ask admin to enter the broadcast message"""
+    text = """📢 **Broadcast Message to All Users**
+
+Please enter the message you want to send to all users.
+
+⚠️ **Note:** This will be sent to all users in the database.
+
+You can include formatting like:
+- *Bold text*
+- _Italic text_
+- `Code blocks`
+- [Links](https://example.com)"""
+    
+    keyboard = [[InlineKeyboardButton("❌ Cancel", callback_data='cancel_broadcast')]]
+    
+    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+    # Set a flag in context to indicate we're waiting for a broadcast message
+    return 'waiting_for_broadcast'
+
+async def handle_broadcast_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle the actual broadcast message sending"""
+    if update.effective_user.id != ADMIN_USER_ID:
+        return
+    
+    message_text = update.message.text
+    users = bot.get_all_users()
+    
+    if not users:
+        await update.message.reply_text("❌ No users found in database.")
+        return
+    
+    total_users = len(users)
+    await update.message.reply_text(f"📢 Starting broadcast to {total_users} users...")
+    
+    success_count = 0
+    fail_count = 0
+    
+    for user in users:
+        try:
+            await context.bot.send_message(
+                chat_id=user['user_id'],
+                text=f"📢 **Announcement from Admin**\n\n{message_text}",
+                parse_mode='Markdown'
+            )
+            success_count += 1
+            # Small delay to avoid hitting rate limits
+            await asyncio.sleep(0.1)
+        except Exception as e:
+            logger.error(f"Failed to send broadcast to user {user['user_id']}: {e}")
+            fail_count += 1
+    
+    await update.message.reply_text(
+        f"✅ Broadcast completed!\n\n"
+        f"• Successfully sent: {success_count}\n"
+        f"• Failed to send: {fail_count}\n\n"
+        f"Total users: {total_users}"
+    )
+
 def main():
     TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
     if not TOKEN:
@@ -1641,6 +1722,7 @@ def main():
     
     # Message handlers (command handlers'dan sonra)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_license_activation))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & filters.User(ADMIN_USER_ID), handle_broadcast_message))
     
     # Callback handlers
     app.add_handler(CallbackQueryHandler(button_handler))
@@ -1660,10 +1742,6 @@ def main():
     logger.info(f"Monitoring {len(bot.exchanges)} exchanges")
     logger.info(f"Tracking {len(bot.trusted_symbols)} trusted symbols")
     logger.info(f"Premium users loaded: {len(bot.premium_users)}")
-    
-    # app.run_polling() # This line is redundant, should be removed for cleaner code.
-                      # app.run_polling() is already called above.
-                      # Keeping it for now as per original structure, but ideal fix would be to remove.
 
 if __name__ == '__main__':
     main()
