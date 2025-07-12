@@ -1146,9 +1146,9 @@ async def show_premium_info(query):
 💰 **Pricing Plans:**
 🔥 LIMITED OFFER 🔥
 💎 Monthly Subscription - $19.90
-💎 Quarterly Subscription - $49.90 (Save 15%)
-💎 6 Months Subscription - $89.90 (Save 25%)
-💎 Yearly Subscription - $159.90 (Save 33%)
+💎 Quarterly Subscription - $29.90 (Save 30$ 🤑)
+💎 6 Months Subscription - $49.90 (Save 70$ 🤑)
+💎 Yearly Subscription - $79.90 (Save 160$ 🤑)
 
 🛒 Purchase subscription from Buy Premium Button
 
