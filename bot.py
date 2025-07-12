@@ -279,8 +279,30 @@ class ArbitrageBot:
                         result = await response.json()
                         if result.get('success', False):
                             purchase = result.get('purchase', {})
-                            product_name = purchase.get('product_name', 'Monthly')
-                            result['purchase']['product_name'] = product_name
+                            
+                            # Gumroad'dan gelen subscription_ended_at bilgisini al
+                            subscription_end_date_str = purchase.get('subscription_ended_at')
+                            
+                            if subscription_end_date_str:
+                                try:
+                                    # Tarihi parse et (örnek format: "2023-12-31T23:59:59Z")
+                                    end_date = datetime.strptime(subscription_end_date_str, '%Y-%m-%dT%H:%M:%SZ')
+                                    result['purchase']['end_date'] = end_date
+                                    logger.info(f"Subscription end date from Gumroad: {end_date}")
+                                except ValueError as e:
+                                    logger.error(f"Error parsing subscription_ended_at: {e}")
+                                    # Fallback: Varsayılan üyelik süresi
+                                    product_name = purchase.get('product_name', 'Monthly')
+                                    days = self.subscription_plans.get(product_name, 30)
+                                    end_date = datetime.now() + timedelta(days=days)
+                                    result['purchase']['end_date'] = end_date
+                            else:
+                                # subscription_ended_at yoksa varsayılan üyelik süresi
+                                product_name = purchase.get('product_name', 'Monthly')
+                                days = self.subscription_plans.get(product_name, 30)
+                                end_date = datetime.now() + timedelta(days=days)
+                                result['purchase']['end_date'] = end_date
+                                
                         return result
                     else:
                         response_text = await response.text()
@@ -292,12 +314,24 @@ class ArbitrageBot:
             return {'success': False, 'error': str(e)}
 
     def activate_license_key(self, license_key: str, user_id: int, username: str, sale_data: Dict):
-        """Activate license key and add premium subscription in PostgreSQL."""
+        """Activate license key using Gumroad's subscription_ended_at"""
         conn = self.get_db_connection()
         try:
-            # Determine subscription type and duration
-            product_name = sale_data.get('product_name', 'Monthly')
-            days = self.subscription_plans.get(product_name, 30)
+            # Gumroad'dan gelen end_date'i al
+            end_date = sale_data.get('end_date')
+            
+            # Debug log
+            logger.info(f"Raw end_date from Gumroad: {end_date}")
+            
+            # Eğer end_date yoksa veya geçersizse, varsayılan süreyi kullan
+            if not end_date or not isinstance(end_date, datetime):
+                product_name = sale_data.get('product_name', 'Monthly')
+                days = self.subscription_plans.get(product_name, 30)
+                end_date = datetime.now() + timedelta(days=days)
+                logger.warning(f"Using fallback subscription duration for user {user_id}")
+            
+            # PostgreSQL için tarih formatına çevir (YYYY-MM-DD)
+            end_date_str = end_date.strftime('%Y-%m-%d')
             
             with conn.cursor() as cursor:
                 # Save license key usage
@@ -307,8 +341,7 @@ class ArbitrageBot:
                     VALUES (%s, %s, %s, %s)
                 ''', (license_key, user_id, username, sale_data.get('sale_id', '')))
                 
-                # Add premium subscription
-                end_date = (datetime.now() + timedelta(days=days)).strftime('%Y-%m-%d')
+                # Add premium subscription with Gumroad's end date
                 cursor.execute('''
                     INSERT INTO premium_users 
                     (user_id, username, subscription_end)
@@ -317,7 +350,7 @@ class ArbitrageBot:
                         username = EXCLUDED.username,
                         subscription_end = EXCLUDED.subscription_end,
                         added_date = CURRENT_TIMESTAMP
-                ''', (user_id, username, end_date))
+                ''', (user_id, username, end_date_str))
                 
             conn.commit()
             
@@ -325,10 +358,12 @@ class ArbitrageBot:
             self.used_license_keys.add(license_key)
             self.premium_users.add(user_id)
             
-            logger.info(f"License activated: {license_key} for user {user_id}. Plan: {product_name} ({days} days)")
+            logger.info(f"License activated for user {user_id} until {end_date_str}")
+            return end_date  # Aktivasyon tarihini döndür
         except Exception as e:
             logger.error(f"Error activating license key: {e}")
             conn.rollback()
+            raise
 
     def normalize_symbol(self, symbol: str, exchange: str) -> str:
         """Normalize symbol format across exchanges"""
@@ -1072,19 +1107,21 @@ async def handle_license_activation(update: Update, context: ContextTypes.DEFAUL
         )
         return
     
-    bot.activate_license_key(
+    # Lisansı aktifleştir ve bitiş tarihini al
+    end_date = bot.activate_license_key(
         license_key, 
         user.id, 
         user.username or "", 
         verification_result.get('purchase', {})
     )
     
+    # Kullanıcıya bilgi mesajı gönder
     await update.message.reply_text(
-        "✅ **License Activated Successfully!**\n\n"
-        "🎉 Welcome to Premium Membership!\n"
-        "📅 Valid for: 30 days\n"
-        "💎 All premium features are now active\n\n"
-        "Use /start to see your premium status!"
+        f"✅ **License Activated Successfully!**\n\n"
+        f"🎉 Welcome to Premium Membership!\n"
+        f"📅 Valid until: {end_date.strftime('%Y-%m-%d %H:%M:%S')}\n"
+        f"💎 All premium features are now active\n\n"
+        f"Use /start to see your premium status!"
     )
 
 async def show_premium_info(query):
@@ -1146,9 +1183,9 @@ async def show_premium_info(query):
 💰 **Pricing Plans:**
 🔥 LIMITED OFFER 🔥
 💎 Monthly Subscription - $19.90
-💎 Quarterly Subscription - $29.90 (Save 30$ 🤑)
-💎 6 Months Subscription - $49.90 (Save 70$ 🤑)
-💎 Yearly Subscription - $79.90 (Save 160$ 🤑)
+💎 Quarterly Subscription - $49.90 (Save 15%)
+💎 6 Months Subscription - $89.90 (Save 25%)
+💎 Yearly Subscription - $159.90 (Save 33%)
 
 🛒 Purchase subscription from Buy Premium Button
 
