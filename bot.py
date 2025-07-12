@@ -1183,9 +1183,11 @@ async def show_premium_info(query):
 💰 **Pricing Plans:**
 🔥 LIMITED OFFER 🔥
 💎 Monthly Subscription - $19.90
-💎 Quarterly Subscription - $29.90 (Save 30$ 🤑)
-💎 6 Months Subscription - $49.90 (Save 70$ 🤑)
-💎 Yearly Subscription - $79.90 (Save 160$ 🤑)
+💎 Quarterly Subscription - $29.90 (Save 30$)
+💎 6 Months Subscription - $49.90 (Save 70$)
+💎 Yearly Subscription - $79.90 (Save 160$)
+
+If you subscribe any of plan. You will get chance to access for automatic arbitrage trading bot. 
 
 🛒 Purchase subscription from Buy Premium Button
 
