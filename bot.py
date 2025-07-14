@@ -1180,14 +1180,13 @@ async def show_premium_info(query):
 - Priority support
 - **📈 Specific Coin Price Analysis with Safety Check**
 
-💰 **Pricing Plans:**
-🔥 LIMITED OFFER 🔥
-💎 Monthly Subscription - $19.90
-💎 Quarterly Subscription - $29.90 (Save 30$)
-💎 6 Months Subscription - $49.90 (Save 70$)
-💎 Yearly Subscription - $79.90 (Save 160$)
+💰 **Pricing :**
+🔥 7 DAYS FREE TRIAL 🔥
+💎 Monthly Subscription - $29.90
 
-If you subscribe any of plan. You will get chance to access for automatic arbitrage trading bot. 
+🚀To get the free trial, click the “Buy Premium” button below. Then, on the page you’re taken to, click the “Subscribe” button and enjoy 7 days of free access without paying anything.🚀
+
+If you subscribe any of plan (Free Trial Included). You will get chance to access automatic trading bot.
 
 🛒 Purchase subscription from Buy Premium Button
 
